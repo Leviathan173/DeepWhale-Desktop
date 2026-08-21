@@ -1,0 +1,41 @@
+name: Release Desktop
+
+# tag `v*`（如 v0.1.0）时构建桌面版安装包并发布 GitHub Release。
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri
+
+      - name: Install frontend deps
+        run: npm ci || npm install
+        working-directory: desktop
+
+      - name: Tauri Build & Release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: desktop
+          tagName: ${{ github.ref_name }}
+          releaseName: "DSH 小鲸鱼桌面版 ${{ github.ref_name }}"
+          releaseDraft: true
+          prerelease: false

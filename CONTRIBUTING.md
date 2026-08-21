@@ -48,4 +48,4 @@ chore(ci): 增加 cargo 静态检查
 |---|---|---|
 | `check.yml` | 每次 PR | desktop：JS 语法检查 + `cargo fmt/clippy/test` |
 | `publish.yml` | push main | 自动发布 dsh-whale-widget 到 npm |
-| `release-desktop.yml`（规划中） | tag `v*` | Tauri 桌面版打包并发布 GitHub Release |
+| `release-desktop.yml` | tag `v*` | Tauri 桌面版打包并发布 GitHub Release（draft） |
