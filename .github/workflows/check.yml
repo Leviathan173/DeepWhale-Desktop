@@ -1,0 +1,41 @@
+name: Desktop check
+
+on:
+  pull_request:
+    paths:
+      - 'desktop/**'
+      - '.github/workflows/check.yml'
+  workflow_dispatch:
+
+jobs:
+  desktop-check:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: desktop/src-tauri
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri
+
+      - name: Frontend JS syntax
+        run: |
+          node --check ../public/widget.js
+          node --check ../public/settings.js
+
+      - name: cargo fmt
+        run: cargo fmt --check
+
+      - name: cargo clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: cargo test
+        run: cargo test
