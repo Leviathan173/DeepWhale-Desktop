@@ -125,11 +125,12 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
 
-        // 昨天记了 30
+        // 前天（用不可能等于今天的固定日期）记了 30
+        let yesterday = "2000-01-01";
         fs::write(
             dir.join("usage.json"),
             serde_json::to_string_pretty(&Ledger {
-                date: "2026-08-21".to_string(),
+                date: yesterday.to_string(),
                 last_balance: Some(100.0),
                 today_usage: 30.0,
                 history: BTreeMap::new(),
@@ -141,7 +142,7 @@ mod tests {
         let l = record_usage(&dir, 95.0);
         assert_eq!(l.date, today_key());
         assert!((l.today_usage - 0.0).abs() < 1e-9);
-        assert!((l.history.get("2026-08-21").copied().unwrap_or(0.0) - 30.0).abs() < 1e-9);
+        assert!((l.history.get(yesterday).copied().unwrap_or(0.0) - 30.0).abs() < 1e-9);
 
         let _ = fs::remove_dir_all(&dir);
     }
