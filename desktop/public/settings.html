@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="UTF-8" />
+  <title>设置 API Key</title>
+  <style>
+    body {
+      font-family: "Microsoft YaHei", system-ui, sans-serif;
+      background: #f5f7fd;
+      margin: 0;
+      padding: 20px 24px;
+      color: #203170;
+    }
+    h1 { font-size: 16px; margin: 0 0 14px; }
+    label { display: block; font-size: 13px; margin: 10px 0 4px; }
+    input {
+      width: 100%;
+      box-sizing: border-box;
+      padding: 7px 10px;
+      border: 1px solid rgba(32, 49, 112, .4);
+      border-radius: 6px;
+      font-size: 13px;
+      color: #203170;
+      background: #fff;
+    }
+    .hint { font-size: 12px; color: #9fb0d9; margin: 4px 0 14px; line-height: 1.5; }
+    .row { display: flex; align-items: center; gap: 10px; margin-top: 16px; }
+    button {
+      padding: 8px 22px;
+      border: none;
+      border-radius: 8px;
+      background: #203170;
+      color: #fff;
+      font-size: 13px;
+      cursor: pointer;
+    }
+    button:hover { background: #2c4190; }
+    #status { font-size: 13px; color: #2fa24c; }
+  </style>
+</head>
+<body>
+  <h1>DeepSeek 凭据设置</h1>
+
+  <label for="api-key">DEEPSEEK_API_KEY（余额接口，必填）</label>
+  <input id="api-key" type="password" placeholder="sk-..." autocomplete="off" />
+  <div class="hint">从 platform.deepseek.com 后台生成的 API Key。</div>
+
+  <label for="platform-token">DEEPSEEK_PLATFORM_TOKEN（令牌实时用量，可选）</label>
+  <input id="platform-token" type="password" placeholder="可选" autocomplete="off" />
+  <div class="hint">平台会话令牌（浏览器 DevTools 用量请求的 Authorization 头）。<br>留空则使用「小鲸鱼记账」模式。</div>
+
+  <div class="row">
+    <button id="save">保存</button>
+    <span id="status"></span>
+  </div>
+
+  <script src="settings.js"></script>
+</body>
+</html>

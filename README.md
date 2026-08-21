@@ -138,3 +138,19 @@ curl http://127.0.0.1:3080/dsh-whale/size.json
 ## 开发与维护
 
 完整规格、视觉参数、架构结论和生成提示词见 `whale-widget-prompt.md`。修改文字位置、颜色、动画、吸附逻辑、台词组或定价表时参考该文件。
+
+## 桌面版（Tauri v2）
+
+将浏览器内嵌挂件改成**独立桌面程序**（不依赖浏览器的 QQ 宠物式透明小鲸鱼），代码在 `desktop/`：
+
+- 前端：`desktop/public/widget.js` 复用原 `WIDGET_JS`（仅把 HTTP 路由换成 Tauri IPC）
+- 后端：`desktop/src-tauri/`（Rust：余额/记账/峰谷定价/配置持久化 + 全屏透明置顶窗口 + 托盘 + 点击穿透）
+- 开发/打包：
+  ```powershell
+  cd desktop
+  npm install
+  npm run tauri dev    # 开发
+  npm run tauri build  # 打包 Windows 安装包
+  ```
+- 首次运行在托盘菜单「设置 API Key」填入 `DEEPSEEK_API_KEY`（可选 `DEEPSEEK_PLATFORM_TOKEN`），配置存于系统 app data 目录。
+- 桌面版与浏览器版（DSH 插件）互不影响，可同时使用；两版记账逻辑一致。
