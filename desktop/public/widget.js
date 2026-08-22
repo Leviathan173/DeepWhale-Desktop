@@ -114,24 +114,15 @@ usageSelect.appendChild(soundOpt('ledger', '小鲸鱼记账 (推荐)'))
 usageSelect.appendChild(soundOpt('token', '实时·令牌 (设置里自动获取)'))
 usageSelect.appendChild(soundOpt('opencode', '本地·opencode+Claude (读本地记账)'))
 usageSelect.addEventListener('change', function () { setUsageMode(usageSelect.value) })
-var providerSelect = document.createElement('select')
-providerSelect.className = 'dshwv-sound'
-providerSelect.addEventListener('change', function () { setProvider(providerSelect.value) })
-function syncProviderSelect() {
-  var hasBail = state.hasBailian
-  providerSelect.innerHTML = ''
-  var opD = document.createElement('option')
-  opD.value = 'deepseek'
-  opD.textContent = 'DeepSeek'
-  providerSelect.appendChild(opD)
-  if (hasBail) {
-    var opB = document.createElement('option')
-    opB.value = 'bailian'
-    opB.textContent = '百炼 TokenPlan'
-    providerSelect.appendChild(opB)
-  }
-  if (!hasBail && state.provider === 'bailian') state.provider = 'deepseek'
-  providerSelect.value = state.provider
+// 启用的供应商列表（按此顺序点击鲸鱼轮换）：deepseek 恒有，百炼有凭据才加入。
+function providerList() {
+  var list = ['deepseek']
+  if (state.hasBailian) list.push('bailian')
+  return list
+}
+function normalizeProvider() {
+  var list = providerList()
+  if (list.indexOf(state.provider) < 0) state.provider = list[0]
 }
 var row1 = menuRow()
 row1.appendChild(menuLabel('大小'))
@@ -140,9 +131,6 @@ row1.appendChild(scaleNumber)
 var row2 = menuRow()
 row2.appendChild(menuLabel('音效'))
 row2.appendChild(soundSelect)
-var rowProv = menuRow()
-rowProv.appendChild(menuLabel('供应商'))
-rowProv.appendChild(providerSelect)
 var volInput = document.createElement('input')
 volInput.type = 'range'
 volInput.min = '0'
@@ -173,7 +161,6 @@ setBtn.addEventListener('click', function () {
 rowSet.appendChild(setBtn)
 menuBox.appendChild(row1)
 menuBox.appendChild(row2)
-menuBox.appendChild(rowProv)
 menuBox.appendChild(row3)
 menuBox.appendChild(row4)
 menuBox.appendChild(rowSet)
@@ -582,7 +569,7 @@ function refresh(manual) {
         if (data && data.bailian) {
           state.hasBailian = data.bailian.configured === false ? false : true
         }
-        syncProviderSelect()
+        normalizeProvider()
         if (state.provider === 'bailian') {
           // 百炼不走余额滚动动画（金额语义不同），直接渲染订阅数据
           state.status = 'ok'
@@ -642,11 +629,11 @@ function setUsageMode(v) {
   saveConfig()
   refresh(false)
 }
-function setProvider(v) {
-  if (!(v === 'deepseek' || v === 'bailian')) v = 'deepseek'
-  if (v === 'bailian' && !state.hasBailian) v = 'deepseek'
-  state.provider = v
-  providerSelect.value = v
+// 点击鲸鱼轮换供应商：deepseek -> 百炼 -> …，超出回到第一个。
+function cycleProvider() {
+  var list = providerList()
+  var i = list.indexOf(state.provider)
+  state.provider = list[(i + 1) % list.length]
   shown = null
   saveConfig()
   render()
@@ -1049,7 +1036,12 @@ function endDrag(e, clickAllowed) {
   pressUp()
   root.classList.remove('dshwv-dragging')
   setWidgetCursor(isWhaleHit(e) ? 'grab' : '')
-  if (clickAllowed && !drag.moved) { showBubble(); refresh(true); return }
+  if (clickAllowed && !drag.moved) {
+    // 点击鲸鱼：轮换到下一个已启用供应商，并展开气泡展示其数据
+    cycleProvider()
+    showBubble()
+    return
+  }
   var dx = e.screenX - drag.startScreenX
   var dy = e.screenY - drag.startScreenY
   var left = clamp(drag.origLeft + dx, 0, Math.max(0, SCREEN.w - drag.w))
@@ -1130,9 +1122,9 @@ function applyConfig(d) {
     state.hasBailian = d.hasBailian
   }
   if (d && typeof d.provider === 'string') {
-    state.provider = d.provider === 'bailian' && state.hasBailian ? 'bailian' : 'deepseek'
+    state.provider = d.provider
   }
-  syncProviderSelect()
+  normalizeProvider()
   render()
   refresh(false)
 }
