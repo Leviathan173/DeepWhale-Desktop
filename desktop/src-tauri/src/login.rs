@@ -102,8 +102,8 @@ pub struct BailianCreds {
 }
 
 /// 百炼 TokenPlan：拉起独立浏览器到订阅页，等用户登录后嗅探
-/// 订阅接口的请求 Cookie + 完整 form body，并抓一次响应体存为样本
-/// （登录后该页会自动请求订阅接口）。
+/// 订阅/用量接口的请求 Cookie + 完整 form body，并抓一次响应体存为样本
+/// （登录后该页会自动请求这两个接口）。
 pub async fn capture_bailian_credentials() -> Result<BailianCreds, String> {
     let client = reqwest::Client::new();
     let mut child = spawn_browser(
@@ -134,7 +134,9 @@ pub async fn capture_bailian_credentials() -> Result<BailianCreds, String> {
     Ok(creds)
 }
 
-const BAILIAN_API: &str = "zeldaHttp.apikeyMgr./tokenplan/personal/api/v2/subscription";
+// 只用「用量」接口：它同时返回重置时间(per1WeekResetTime)与使用比例(per1WeekPercentage)，
+// 且 body 里的 params.Api 必须匹配查询串的 api，否则服务端会拒。所以捕获/重放都锁 consumption 接口。
+const BAILIAN_API: &str = "tokenplan/personal/api/v2/usage";
 
 async fn sniff_bailian(ws_url: &str, deadline: Instant) -> Result<BailianCreds, String> {
     use futures_util::{SinkExt, StreamExt};
@@ -144,16 +146,19 @@ async fn sniff_bailian(ws_url: &str, deadline: Instant) -> Result<BailianCreds, 
     let (mut ws, _) = connect_async(ws_url).await.map_err(|e| e.to_string())?;
     // CDP：id 从 1 开始顺序发命令
     ws.send(Message::Text(
-        json!({ "id": 1, "method": "Network.enable", "params": {} }).to_string().into(),
+        json!({ "id": 1, "method": "Network.enable", "params": { "maxPostDataSize": 65536 } })
+            .to_string()
+            .into(),
     ))
     .await
     .map_err(|e| e.to_string())?;
 
+    // 注意：Chrome 的 Cookie 头走 Network.requestWillBeSentExtraInfo，
+    // 不在 requestWillBeSent 的请求头里。这里两种事件都收，按 requestId 关联。
     let mut cookie: Option<String> = None;
     let mut request_id: Option<String> = None;
     let mut post_data: Option<String> = None;
     let mut sample: Option<String> = None;
-    let mut pending_body: Option<String> = None;
 
     while Instant::now() < deadline {
         let msg = tokio::select! {
@@ -166,28 +171,53 @@ async fn sniff_bailian(ws_url: &str, deadline: Instant) -> Result<BailianCreds, 
         };
         if let Message::Text(t) = msg {
             if let Ok(v) = serde_json::from_str::<Value>(&t) {
-                let method = v.get("method").and_then(|m| m.as_str()).unwrap_or("");
-                if method == "Network.requestWillBeSent" {
-                    let url = v
-                        .pointer("/params/request/url")
-                        .and_then(|u| u.as_str())
-                        .unwrap_or("");
-                    // 订阅接口 URL：action=BroadScopeAspnGateway + api=.../tokenplan/personal/api/v2/subscription
-                    if url.contains("data/api.json") && url.contains(BAILIAN_API) {
+                let method = v.get("method").and_then(|m| m.as_str()).unwrap_or("").to_string();
+                match method.as_str() {
+                    "Network.requestWillBeSentExtraInfo" => {
+                        // 该事件的 headers 里有登录 Cookie；所有 balian 请求共用同一会话 Cookie。
+                        // 始终取最新（登录后才有 login_aliyunid，登录前只有匿名 cna）。
+                        if let Some(ck) = v
+                            .pointer("/params/headers")
+                            .and_then(extract_cookie)
+                        {
+                            if ck.contains("login_aliyunid") {
+                                cookie = Some(ck);
+                            }
+                        }
+                    }
+                    "Network.requestWillBeSent" => {
+                        let url = v
+                            .pointer("/params/request/url")
+                            .and_then(|u| u.as_str())
+                            .unwrap_or("");
+                        // 只认消费/用量接口：action=BroadScopeAspnGateway + api=...usage。
+                        // 订阅接口 body 的 params.Api 与 usage 不一致，不能互相复用。
+                        if url.contains("data/api.json") && url.contains(BAILIAN_API) {
+                            if let Some(rid) = v
+                                .pointer("/params/requestId")
+                                .and_then(|r| r.as_str())
+                                .map(str::to_string)
+                            {
+                                request_id = Some(rid.clone());
+                                // 主动拿完整 form body（含 params/sec_token）
+                                ws.send(Message::Text(
+                                    json!({ "id": 2, "method": "Network.getRequestPostData", "params": { "requestId": rid } })
+                                        .to_string()
+                                        .into(),
+                                ))
+                                .await
+                                .map_err(|e| e.to_string())?;
+                            }
+                        }
+                    }
+                    "Network.loadingFinished" => {
                         let rid = v
                             .pointer("/params/requestId")
                             .and_then(|r| r.as_str())
                             .map(str::to_string);
-                        let ck = v
-                            .pointer("/params/request/headers")
-                            .and_then(extract_cookie);
-                        // 登录后请求才有 cookie；抓到即去向
-                        if let (Some(r), Some(c)) = (rid, ck) {
-                            request_id = Some(r.clone());
-                            cookie = Some(c.clone());
-                            // 主动拿完整 form body（含 params/sec_token/region）
+                        if rid.is_some() && request_id.as_deref() == rid.as_deref() {
                             ws.send(Message::Text(
-                                json!({ "id": 2, "method": "Network.getRequestPostData", "params": { "requestId": r } })
+                                json!({ "id": 3, "method": "Network.getResponseBody", "params": { "requestId": rid } })
                                     .to_string()
                                     .into(),
                             ))
@@ -195,28 +225,14 @@ async fn sniff_bailian(ws_url: &str, deadline: Instant) -> Result<BailianCreds, 
                             .map_err(|e| e.to_string())?;
                         }
                     }
-                } else if method == "Network.loadingFinished" && pending_body.is_none() {
-                    let rid = v
-                        .pointer("/params/requestId")
-                        .and_then(|r| r.as_str())
-                        .map(str::to_string);
-                    if rid.is_some() && request_id.as_deref() == rid.as_deref() {
-                        pending_body = rid.clone();
-                        ws.send(Message::Text(
-                            json!({ "id": 3, "method": "Network.getResponseBody", "params": { "requestId": rid } })
-                                .to_string()
-                                .into(),
-                        ))
-                        .await
-                        .map_err(|e| e.to_string())?;
-                    }
+                    _ => {}
                 }
                 // 命令回执：id=2 post data，id=3 response body
                 if let Some(id) = v.get("id").and_then(|i| i.as_u64()) {
                     if id == 2 {
                         if let Some(pd) = v.pointer("/result/postData").and_then(|p| p.as_str()) {
                             if pd.is_empty() {
-                                return Err("抓取失败：订阅接口请求体为空，请检查登录态".to_string());
+                                return Err("抓取失败：用量接口请求体为空，请检查登录态".to_string());
                             }
                             post_data = Some(pd.to_string());
                         }
@@ -226,8 +242,8 @@ async fn sniff_bailian(ws_url: &str, deadline: Instant) -> Result<BailianCreds, 
                         }
                     }
                 }
+                // Cookie + 完整 body 都拿到即可完成；响应样本是探测用的，拿不到也不阻塞
                 if let (Some(c), Some(p)) = (cookie.clone(), post_data.clone()) {
-                    // 响应样本是探测用的，拿不到也不阻塞完成
                     return Ok(BailianCreds {
                         cookie: c,
                         post_data: p,

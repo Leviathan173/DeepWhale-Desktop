@@ -270,8 +270,8 @@ function buildGroup1() {
       ]
     }
     return [
-      { t: '百炼剩余额度:', s: 'A', c: '' },
-      { t: fmtQuota(b.remaining), s: 'B', c: '' },
+      { t: '百炼周额度剩余:', s: 'A', c: '' },
+      { t: String(b.remaining != null ? b.remaining : '--'), s: 'B', c: '' },
       { t: '重置 ' + fmtReset(b.resetAt), s: 'C', c: '' }
     ]
   }
@@ -415,16 +415,6 @@ function fmt(balance, currency) {
   var fixed = isFinite(num) ? num.toFixed(2) : '--'
   return currency === 'CNY' ? '¥ ' + fixed : fixed + ' ' + currency
 }
-// 百炼剩余额度可能是大量 token：>=1 亿用亿，>=1 万用万，否则原样。
-function fmtQuota(v) {
-  if (v === null || v === undefined || v === '') return '--'
-  var num = Number(v)
-  if (!isFinite(num)) return '--'
-  var abs = Math.abs(num)
-  if (abs >= 1e8) return (num / 1e8).toFixed(2).replace(/\.?0+$/, '') + ' 亿'
-  if (abs >= 1e4) return (num / 1e4).toFixed(2).replace(/\.?0+$/, '') + ' 万'
-  return String(num)
-}
 // 重置时间：ISO(带T) 或时间戳 → "MM-DD HH:MM"。
 function fmtReset(at) {
   if (!at) return '--'
@@ -476,8 +466,8 @@ function render() {
       amount = '--'
       hint = (b && b.error) ? (b.configured === false ? '未配置百炼 · 请在设置获取' : b.error.slice(0, 14)) : '未配置百炼'
     } else {
-      amount = fmtQuota(b.remaining)
-      hint = '剩余额度 ' + (b.total != null ? fmtQuota(b.total) : '') + ' · 重置 ' + fmtReset(b.resetAt)
+      amount = b.remaining != null ? String(b.remaining) : '--'
+      hint = '周剩余额度 · 重置 ' + fmtReset(b.resetAt)
     }
   } else if (state.status === 'error') {
     amount = shown !== null ? fmt(shown, state.currency) : '--'

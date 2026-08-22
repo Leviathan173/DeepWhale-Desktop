@@ -105,14 +105,14 @@ async fn fetch_today_usage(client: &reqwest::Client, platform_token: &str) -> Re
         .ok_or_else(|| "no usage".to_string())
 }
 
-/// 百炼 TokenPlan 订阅接口：原样重放登录时抓到的 form body（含 params/sec_token/region）。
+/// 百炼 TokenPlan 用量/订阅接口：原样重放登录时抓到的 form body（含 params/sec_token）。
 async fn fetch_bailian_subscription(
     client: &reqwest::Client,
     cookie: &str,
     post_data: &str,
 ) -> Result<Value, String> {
     let url = format!(
-        "{BAILIAN_API_URL}?action=BroadScopeAspnGateway&product=sfm_bailian&api=zeldaHttp.apikeyMgr./tokenplan/personal/api/v2/subscription&_v=undefined"
+        "{BAILIAN_API_URL}?action=BroadScopeAspnGateway&product=sfm_bailian&api=zeldaHttp.apikeyMgr./tokenplan/personal/api/v2/usage&_v=undefined"
     );
     let ress = client
         .post(&url)
@@ -131,9 +131,14 @@ async fn fetch_bailian_subscription(
     ress.json::<Value>().await.map_err(|e| e.to_string())
 }
 
-/// 从订阅响应里宽泛提取 剩余额度/总额/已用/重置时间。
-/// 字段名待拿到真实样本后定稿（见 bailian_sample.json）。用启发式扫描兜底：
-/// 数值取 (remaining|surplus|available|left|quota) 类键，时间取 (expire|end|reset|cycle|nextRecharge)。
+/// 解析百炼 TokenPlan 用量接口响应（实测结构）：
+/// {
+///   code, data: { success, DataV2: { data: { success, data: {
+///     per1WeekResetTime: <ms>,      // 本周重置时间
+///     per1WeekPercentage: 0.19      // 本周已用比例（0~1）
+///   } } } }
+/// }
+/// 也兼容订阅接口（remainingDays / endTime），字段取哪个按抓到样本而定。
 fn parse_bailian_subscription(body: &Value) -> Value {
     let data = body.get("data").unwrap_or(body);
     let success = data
@@ -150,87 +155,43 @@ fn parse_bailian_subscription(body: &Value) -> Value {
         return json!({ "ok": false, "error": msg });
     }
 
-    let mut remaining: Option<f64> = None;
-    let mut total: Option<f64> = None;
-    let mut used: Option<f64> = None;
-    let mut unit: Option<String> = None;
-    let mut reset_at: Option<String> = None;
-    scan_subscription(data, &mut remaining, &mut total, &mut used, &mut unit, &mut reset_at);
+    // 钻进 DataV2.data.data 取真实业务字段
+    let inner = data
+        .pointer("/DataV2/data/data")
+        .or_else(|| data.pointer("/DataV2/data"))
+        .or_else(|| data.get("data"));
 
+    let mut reset_at: Option<f64> = None;
+    let mut percent_str: Option<String> = None;
+    let mut remaining_days: Option<f64> = None;
+    let mut end_time: Option<f64> = None;
+
+    if let Some(inner) = inner {
+        if let (Some(p), Some(r)) = (
+            inner.get("per1WeekPercentage").and_then(|v| v.as_f64()),
+            inner.get("per1WeekResetTime"),
+        ) {
+            percent_str = Some(format!("{:.1}%", (1.0 - p) * 100.0));
+            reset_at = r.as_f64();
+        }
+        if let Some(d) = inner.get("remainingDays").and_then(|v| v.as_f64()) {
+            remaining_days = Some(d);
+        }
+        if let Some(t) = inner.get("endTime") {
+            end_time = t.as_f64();
+        }
+    }
+
+    // 兜底：任意成功响应也算 ok（字段缺失时前端显示占位）
     json!({
         "ok": true,
-        "remaining": remaining,
-        "total": total,
-        "used": used,
-        "unit": unit,
+        "remaining": percent_str,
         "resetAt": reset_at,
+        "resetAtMs": reset_at,
+        "remainingDays": remaining_days,
+        "endTime": end_time,
         "raw": body,
     })
-}
-
-fn scan_subscription(
-    v: &Value,
-    remaining: &mut Option<f64>,
-    total: &mut Option<f64>,
-    used: &mut Option<f64>,
-    unit: &mut Option<String>,
-    reset_at: &mut Option<String>,
-) {
-    match v {
-        Value::Object(m) => {
-            for (k, val) in m {
-                let kl = k.to_ascii_lowercase();
-                match val {
-                    Value::String(s) => {
-                        if reset_at.is_none()
-                            && (kl.contains("expire")
-                                || kl.contains("endtime")
-                                || kl.contains("reset")
-                                || kl.contains("cycleend")
-                                || kl.contains("nextrecharge"))
-                            && (s.contains('-') || s.contains(':') && s.chars().filter(|c| *c == ':').count() >= 2)
-                        {
-                            *reset_at = Some(s.clone());
-                        } else if unit.is_none()
-                            && (kl.contains("unit") || kl.contains("quotaunit") || kl.contains("billingmode"))
-                            && !s.is_empty()
-                        {
-                            *unit = Some(s.clone());
-                        }
-                    }
-                    Value::Number(_) => {
-                        if let Some(n) = val.as_f64() {
-                            if remaining.is_none()
-                                && (kl.contains("remaining")
-                                    || kl.contains("remain")
-                                    || kl.contains("surplus")
-                                    || kl.contains("available")
-                                    || kl.contains("left"))
-                            {
-                                *remaining = Some(n);
-                            } else if total.is_none()
-                                && (kl.contains("total") || kl.contains("limit") || kl.contains("quota"))
-                            {
-                                *total = Some(n);
-                            } else if used.is_none()
-                                && (kl.contains("used") || kl.contains("consume") || kl.contains("cost"))
-                            {
-                                *used = Some(n);
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-                scan_subscription(val, remaining, total, used, unit, reset_at);
-            }
-        }
-        Value::Array(a) => {
-            for e in a {
-                scan_subscription(e, remaining, total, used, unit, reset_at);
-            }
-        }
-        _ => {}
-    }
 }
 
 /// 组装完整 payload（记账/令牌双模式 + 峰谷标记 + 落缓存）。
@@ -384,25 +345,64 @@ mod tests {
 
     #[test]
     fn bailian_sample_shape_parsed() {
-        // 登录态响应：remaining/total/used/resetAt 启发式提取
-        let out = parse_bailian_subscription(&json!({
+        // 实测用量接口响应：per1WeekPercentage + per1WeekResetTime(ms)
+        let body: Value = serde_json::from_str(r#"{
             "code": "200",
             "data": {
+                "DataV2": {
+                    "ret": ["SUCCESS::接口调用成功"],
+                    "data": {
+                        "msg": "Success.",
+                        "code": "SUCCESS",
+                        "data": {
+                            "per1WeekResetTime": 1787728620000,
+                            "per1WeekPercentage": 0.191642446
+                        },
+                        "requestId": "x",
+                        "success": true
+                    }
+                },
                 "success": true,
-                "result": {
-                    "remainingQuota": 860000,
-                    "totalQuota": 1000000,
-                    "usedQuota": 140000,
-                    "cycleEndTime": "2026-08-29T00:00:00+08:00",
-                    "unit": "tokens"
-                }
-            }
-        }));
+                "httpStatus": 200,
+                "errorCode": "",
+                "api": "zeldaHttp.apikeyMgr./tokenplan/personal/api/v2/usage",
+                "errorMsg": ""
+            },
+            "httpStatusCode": "200",
+            "successResponse": true
+        }"#)
+        .unwrap();
+        let out = parse_bailian_subscription(&body);
         assert_eq!(out["ok"], true);
-        assert_eq!(out["remaining"], 860000.0);
-        assert_eq!(out["total"], 1000000.0);
-        assert_eq!(out["used"], 140000.0);
-        assert!(out["resetAt"].as_str().unwrap().contains("2026-08-29"));
+        assert_eq!(out["remaining"].as_str().unwrap(), "80.8%");
+        assert_eq!(out["resetAtMs"], 1787728620000.0);
+    }
+
+    #[test]
+    fn bailian_sample_subscription_shape() {
+        // 订阅接口：remainingDays / endTime 也应被提取
+        let body: Value = serde_json::from_str(r#"{
+            "code": "200",
+            "data": {
+                "DataV2": { "data": { "data": {
+                    "remainingDays": 70,
+                    "endTime": 1793462400000,
+                    "status": "VALID"
+                }, "success": true } },
+                "success": true,
+                "httpStatus": 200,
+                "errorCode": "",
+                "api": "zeldaHttp.apikeyMgr./tokenplan/personal/api/v2/subscription",
+                "errorMsg": ""
+            },
+            "httpStatusCode": "200",
+            "successResponse": true
+        }"#)
+        .unwrap();
+        let out = parse_bailian_subscription(&body);
+        assert_eq!(out["ok"], true);
+        assert_eq!(out["remainingDays"], 70.0);
+        assert_eq!(out["endTime"], 1793462400000.0);
     }
 
     #[test]
