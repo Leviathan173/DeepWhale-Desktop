@@ -152,5 +152,27 @@ curl http://127.0.0.1:3080/dsh-whale/size.json
   npm run tauri dev    # 开发
   npm run tauri build  # 打包 Windows 安装包
   ```
-- 首次运行在托盘菜单「设置 API Key」填入 `DEEPSEEK_API_KEY`（可选 `DEEPSEEK_PLATFORM_TOKEN`），配置存于系统 app data 目录。
-- 桌面版与浏览器版（DSH 插件）互不影响，可同时使用；两版记账逻辑一致。
+- 首次运行在托盘菜单「设置」填写凭证，配置存于系统 app data 目录。
+
+### 多供应商余额
+
+- **DeepSeek**：填 `DEEPSEEK_API_KEY`（按量余额）。平台会话令牌可点「自动抓取」用独立浏览器 + CDP 嗅探登录态获得。
+- **百炼 TokenPlan（订阅制）**：控制台内部接口无公开 API-key 入口，点设置页「自动抓取百炼登录态」会拉起独立浏览器、在已登录的浏览器上吸取登录 Cookie + 请求体；展示**周剩余额度**（百分比）与**周重置时间**。凭据会过期，过期后重新抓取。
+- **供应商切换**：点击鲸鱼在已启用供应商间轮换（deepseek → 百炼 → …），气泡相应切换四行/两行布局。
+
+### 今日已用（本地记账）
+
+桌面版不依赖余额差值，直接重算当日已用：
+
+- **opencode 记账**：读取 `opencode.sqlite`（本会话历史），按供应商/模型匹配计价表重算当日费用。
+- **Claude Code 记账**：读取 `~/.claude/projects/**` 下的 jsonl 用量记录，同样按计价表计价。
+- **计价表**：按供应商配置模型单价（输入/输出/缓存读/缓存写四段拆分）、峰谷两档；未配置模型自动套内置官方价。
+
+### 验证
+
+```powershell
+cargo test                       # 16 项单元测试
+cd desktop/src-tauri && cargo clippy --all-targets -- -D warnings
+```
+
+桌面版与浏览器版（DSH 插件）互不影响，可同时使用；浏览器版记账逻辑沿用余额差值旧方案。
