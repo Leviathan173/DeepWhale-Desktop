@@ -13,4 +13,6 @@ pub struct AppState {
     pub client: reqwest::Client,
     pub cache: Mutex<Option<BalanceCache>>,
     pub busy: tokio::sync::Mutex<()>,
+    /// 序列化 config.json 的读改写，避免 set_config 与 save_credentials 并发互相覆盖。
+    pub cfg: Mutex<()>,
 }

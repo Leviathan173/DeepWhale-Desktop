@@ -26,8 +26,12 @@ jobs:
           workspaces: desktop/src-tauri
 
       - name: Install frontend deps
-        run: npm ci || npm install
+        run: npm ci
         working-directory: desktop
+
+      - name: cargo test
+        run: cargo test
+        working-directory: desktop/src-tauri
 
       - name: Tauri Build & Release
         uses: tauri-apps/tauri-action@v0

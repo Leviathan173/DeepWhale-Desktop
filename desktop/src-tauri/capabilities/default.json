@@ -3,5 +3,5 @@
   "identifier": "default",
   "description": "主窗口与设置窗口默认能力",
   "windows": ["main", "settings"],
-  "permissions": ["core:default"]
+  "permissions": ["core:default", "core:event:default"]
 }

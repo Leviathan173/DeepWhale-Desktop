@@ -11,6 +11,22 @@
       padding: 20px 24px;
       color: #203170;
     }
+    html { scroll-behavior: smooth; }
+    .layout { display: flex; gap: 14px; align-items: flex-start; }
+    .sidenav {
+      width: 30%; min-width: 110px; max-width: 190px;
+      position: sticky; top: 16px; align-self: flex-start;
+      max-height: calc(100vh - 32px); overflow: auto;
+      font-size: 13px; flex-shrink: 0;
+    }
+    .sidenav .nav-title { font-size: 12px; color: #9fb0d9; margin: 6px 8px; }
+    .sidenav a {
+      display: block; padding: 6px 10px; color: #203170; text-decoration: none;
+      border-radius: 6px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .sidenav a:hover { background: #eef1fa; }
+    .sidenav a.active { background: #203170; color: #fff; }
+    .content { flex: 1; min-width: 0; }
     h1 { font-size: 16px; margin: 0 0 14px; }
     label { display: block; font-size: 13px; margin: 10px 0 4px; }
     input {
@@ -23,8 +39,21 @@
       color: #203170;
       background: #fff;
     }
-    .hint { font-size: 12px; color: #9fb0d9; margin: 4px 0 14px; line-height: 1.5; }
-    .row { display: flex; align-items: center; gap: 10px; margin-top: 16px; }
+    .hint { font-size: 12px; color: #9fb0d9; margin: 4px 0 10px; line-height: 1.5; }
+    .hint code { background: rgba(32,49,112,.08); padding: 1px 4px; border-radius: 4px; }
+    textarea {
+      width: 100%;
+      box-sizing: border-box;
+      padding: 7px 10px;
+      border: 1px solid rgba(32, 49, 112, .4);
+      border-radius: 6px;
+      font-size: 12px;
+      font-family: ui-monospace, Consolas, monospace;
+      color: #203170;
+      background: #fff;
+      resize: vertical;
+    }
+    .row { display: flex; align-items: center; gap: 10px; margin-top: 14px; }
     button {
       padding: 8px 22px;
       border: none;
@@ -35,23 +64,129 @@
       cursor: pointer;
     }
     button:hover { background: #2c4190; }
+    button:disabled { opacity: .55; cursor: default; }
+    button.ghost {
+      background: #fff;
+      color: #203170;
+      border: 1px solid rgba(32,49,112,.4);
+      padding: 5px 12px;
+      font-size: 12px;
+    }
+    button.ghost:hover { background: #eef1fa; }
     #status { font-size: 13px; color: #2fa24c; }
+    #tokstatus { font-size: 12px; color: #2fa24c; line-height: 1.5; }
+
+    /* 计价表编辑：提供商卡片 */
+    hr { border: none; border-top: 1px solid rgba(32,49,112,.15); margin: 20px 0 12px; }
+    .prov { border: 1px solid rgba(32,49,112,.25); border-radius: 8px; margin: 10px 0; background: #fff; overflow: hidden; }
+    .prov-title {
+      background: #eef1fa; padding: 8px 12px; display: flex; align-items: center;
+      gap: 8px; flex-wrap: nowrap; border-bottom: 1px solid rgba(32,49,112,.12);
+    }
+    .prov-title .lbl { font-size: 12px; color: #7c8bc4; white-space: nowrap; flex-shrink: 0; }
+    .prov-title input[type="text"] { flex: 1 1 90px; min-width: 70px; width: auto; }
+    .bill { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; white-space: nowrap; }
+    .bill input[type="radio"], .bill input[type="checkbox"] { width: auto; margin: 0; }
+    .prov-title .del { margin-left: auto; white-space: nowrap; }
+    #pricestatus { font-size: 12px; color: #2fa24c; margin-top: 8px; min-height: 16px; line-height: 1.5; }
+    table.mini { width: 100%; table-layout: fixed; border-collapse: collapse; }
+    table.mini th, table.mini td { padding: 4px 8px; text-align: left; font-size: 12px; }
+    table.mini th { color: #7c8bc4; font-weight: normal; font-size: 11px; border-bottom: 1px solid rgba(32,49,112,.12); }
+    table.mini td input { padding: 4px 6px; font-size: 12px; box-sizing: border-box; width: 100%; min-width: 0; }
+    table.mini td input[type="text"] { width: 100%; }
+    table.mini td input[type="number"] { width: 100%; }
+    table.mini td.tier { text-align: center; color: #7c8bc4; font-size: 11px; white-space: nowrap; }
+    .prov-models { padding: 8px 12px; }
+    .prov.disabled .prov-models { opacity: .45; pointer-events: none; }
+    .prov-note { font-size: 12px; color: #e0433f; padding: 0 12px 8px; }
+    .models-add { margin: 0 12px 10px; }
+    .del { background: none; border: none; color: #e0433f; cursor: pointer; font-size: 14px; padding: 0 6px; border-radius: 4px; }
+    .tiny { padding: 4px 10px; font-size: 12px; }
+    /* 灰显的内置价目：仅展示，不落盘 */
+    input.auto { color: #9fb0d9; }
+    input.auto-fill { box-shadow: inset 0 -2px 0 rgba(32,49,112,.15); }
   </style>
 </head>
 <body>
-  <h1>DeepSeek 凭据设置</h1>
+  <div class="layout">
+    <nav class="sidenav" id="sidenav" aria-label="设置导航"></nav>
+    <div class="content">
 
-  <label for="api-key">DEEPSEEK_API_KEY（余额接口，必填）</label>
-  <input id="api-key" type="password" placeholder="sk-..." autocomplete="off" />
-  <div class="hint">从 platform.deepseek.com 后台生成的 API Key。</div>
+      <section id="sec-creds">
+        <h1>DeepSeek 凭据设置</h1>
 
-  <label for="platform-token">DEEPSEEK_PLATFORM_TOKEN（令牌实时用量，可选）</label>
-  <input id="platform-token" type="password" placeholder="可选" autocomplete="off" />
-  <div class="hint">平台会话令牌（浏览器 DevTools 用量请求的 Authorization 头）。<br>留空则使用「小鲸鱼记账」模式。</div>
+        <label for="api-key">DEEPSEEK_API_KEY（余额接口，必填）</label>
+        <input id="api-key" type="password" placeholder="sk-..." autocomplete="off" />
+        <div class="hint">从 platform.deepseek.com 后台生成的 API Key。</div>
 
-  <div class="row">
-    <button id="save">保存</button>
-    <span id="status"></span>
+        <label for="platform-token">DEEPSEEK_PLATFORM_TOKEN（令牌实时用量，可选）</label>
+        <input id="platform-token" type="password" placeholder="可选" autocomplete="off" />
+        <div class="hint">
+        平台会话令牌。点击下方按钮，在打开的独立浏览器里登录
+        <b>platform.deepseek.com/usage</b>，自动抓取并保存，无需手动复制。<br>
+        若自动获取失败，可手动 DevTools 查看用量请求的 Authorization 头填此框。<br>
+        令牌保存在本地 <b>config.json</b>，重启后仍有效；若过期失效需重新获取。<br>
+        输入框留空点击保存 = 保留原值。留空则使用「小鲸鱼记账（估算）」模式。
+        </div>
+        <div class="row">
+          <button id="autotoken" class="ghost">自动获取令牌</button>
+          <span id="tokstatus"></span>
+        </div>
+
+        <div class="row">
+          <button id="save">保存</button>
+          <span id="status"></span>
+        </div>
+      </section>
+
+      <section id="sec-bailian">
+        <h1>百炼令牌套餐（订阅制）</h1>
+        <div class="hint">
+          显示<b>七天剩余额度</b>与<b>重置时间</b>。该接口在登录后的百炼控制台内，
+          无公开 API-key 查询入口，需自动抓取登录凭据。<br>
+          点击下方按钮，在打开的独立浏览器里登录百炼控制台（会自动打开
+          TokenPlan 个人版页面），随后自动抓取请求 Cookie 与完整请求体并保存。<br>
+          阿里云登录态（Cookie）会过期；过期后重新点一次「自动获取百炼凭据」即可。<br>
+          备用：抓取失败时可自行在 DevTools Network 里复制订阅接口
+          <code>data/api.json</code> 请求的 <b>Cookie</b> 与 <b>Request Body</b> 填入下方框。
+        </div>
+        <label for="bailian-cookie">百炼 Cookie（请求头，自动抓取时会填充）</label>
+        <input id="bailian-cookie" type="password" placeholder="留空=保留原值" autocomplete="off" />
+        <label for="bailian-post-data">百炼订阅请求 Body（params=...&region=...&sec_token=...）</label>
+        <textarea id="bailian-post-data" rows="3" placeholder="留空=保留原值"></textarea>
+        <div class="hint" id="bailian-sensitivity" style="color:#e0433f">
+          Cookie 与 Body 含登录会话凭据（sec_token 等），仅保存在本机 config.json；
+          请勿截图/分享，过期后重新自动获取即可。
+        </div>
+        <div class="row">
+          <button id="autobailian" class="ghost">自动获取百炼凭据</button>
+          <button id="savebailian">保存百炼凭据</button>
+          <span id="bailianstatus"></span>
+        </div>
+      </section>
+
+      <hr>
+
+      <section id="sec-pricing">
+        <h1>用量计价（本地记账）</h1>
+        <div class="hint">
+          「本地·opencode+Claude」模式按此表算今日金额。<br>
+          每个<b>提供商</b>选一种计费：<b>按量计费</b>（计入今日金额）或<b>套餐·订阅制</b>（如百炼 tokenplan，不计入）。<br>
+          <b>峰谷计价</b>勾选后，高峰时段价格按两档价目或单价的 ×2 计（DeepSeek 官方尤其如此）。<br>
+用户显式填价目时按类别填写，各列留空会自动填入内置价目（灰底显示，仅展示不落盘）。<br>
+    opencode 数据按供应商名匹配，Claude Code 数据固定归到「claude」提供商。全部删空 = 恢复默认。<br>
+    编辑计价表任意字段后自动保存；也可点「保存计价表」手动保存。
+        </div>
+        <div id="pricing"></div>
+        <div class="row">
+          <button type="button" class="tiny" id="autoprov">自动获取提供商与计费</button>
+          <button type="button" class="tiny" id="addprov">+ 新增供应商</button>
+          <button type="button" class="tiny" id="savepricing">保存计价表</button>
+        </div>
+        <div id="pricestatus"></div>
+      </section>
+
+    </div>
   </div>
 
   <script src="settings.js"></script>

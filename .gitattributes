@@ -1,0 +1,10 @@
+# 阻止 Windows 下 git 反复报 LF/CRLF 噪声（L9）
+* text=auto
+*.toml text eol=lf
+*.json text eol=lf
+*.js text eol=lf
+*.html text eol=lf
+*.rs text eol=lf
+*.yml text eol=lf
+*.md text eol=lf
+.gitattributes text eol=lf
