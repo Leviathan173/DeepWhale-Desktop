@@ -126,7 +126,7 @@
         <b>platform.deepseek.com/usage</b>，自动抓取并保存，无需手动复制。<br>
         若自动获取失败，可手动 DevTools 查看用量请求的 Authorization 头填此框。<br>
         令牌保存在本地 <b>config.json</b>，重启后仍有效；若过期失效需重新获取。<br>
-        输入框留空点击保存 = 保留原值。留空则使用「小鲸鱼记账（估算）」模式。
+        输入框留空点击保存 = 保留原值。留空则使用「小鲸鱼记账」模式（本地会话按计价表计算今日金额）。
         </div>
         <div class="row">
           <button id="autotoken" class="ghost">自动获取令牌</button>
@@ -195,7 +195,7 @@
       <section id="sec-pricing">
         <h1>用量计价（本地记账）</h1>
         <div class="hint">
-          「本地·opencode+Claude」模式按此表算今日金额。<br>
+          「小鲸鱼记账」模式按此表算今日金额。<br>
           每个<b>提供商</b>选一种计费：<b>按量计费</b>（计入今日金额）或<b>套餐·订阅制</b>（如百炼 tokenplan，不计入）。<br>
           <b>峰谷计价</b>勾选后，高峰时段价格按两档价目或单价的 ×2 计（DeepSeek 官方尤其如此）。<br>
 用户显式填价目时按类别填写，各列留空会自动填入内置价目（灰底显示，仅展示不落盘）。<br>

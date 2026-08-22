@@ -6,10 +6,8 @@ use std::path::Path;
 pub fn normalize(m: &str) -> &'static str {
     if m == "token" {
         "token"
-    } else if m == "opencode" {
-        "opencode"
     } else {
-        "ledger"
+        "opencode"
     }
 }
 
@@ -126,7 +124,7 @@ impl Default for AppConfig {
             sound: true,
             vol: 0.9,
             sound_set: "duck".to_string(),
-            usage_mode: "ledger".to_string(),
+            usage_mode: "token".to_string(),
             api_key: None,
             platform_token: None,
             bailian_cookie: None,

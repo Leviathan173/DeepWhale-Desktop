@@ -5,7 +5,6 @@ mod assets;
 mod balance;
 mod claude;
 mod config;
-mod ledger;
 mod login;
 mod opencode;
 mod pricing;
@@ -215,9 +214,7 @@ fn set_config(app: tauri::AppHandle, payload: Value) -> Result<Value, String> {
         .unwrap_or(0.9)
         .clamp(0.0, 1.0);
     let sound_set = get("soundSet").and_then(|v| v.as_str()).unwrap_or("duck");
-    let usage_mode = get("usageMode")
-        .and_then(|v| v.as_str())
-        .unwrap_or("ledger");
+    let usage_mode = get("usageMode").and_then(|v| v.as_str()).unwrap_or("token");
     let opencode_db = get("opencodeDb").and_then(|v| v.as_str()).unwrap_or("");
     let provider = get("provider")
         .and_then(|v| v.as_str())

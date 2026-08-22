@@ -110,9 +110,8 @@ soundSelect.appendChild(soundOpt('fx1', '音效1'))
 soundSelect.addEventListener('change', function () { setSoundSet(soundSelect.value) })
 var usageSelect = document.createElement('select')
 usageSelect.className = 'dshwv-sound'
-usageSelect.appendChild(soundOpt('ledger', '小鲸鱼记账 (推荐)'))
-usageSelect.appendChild(soundOpt('token', '实时·令牌 (设置里自动获取)'))
-usageSelect.appendChild(soundOpt('opencode', '本地·opencode+Claude (读本地记账)'))
+usageSelect.appendChild(soundOpt('token', '实时·令牌 (推荐，设置里自动获取)'))
+usageSelect.appendChild(soundOpt('opencode', '小鲸鱼记账 (本地会话按计价表计算)'))
 usageSelect.addEventListener('change', function () { setUsageMode(usageSelect.value) })
 // 启用的供应商列表（按此顺序点击鲸鱼轮换）：deepseek 恒有，百炼有凭据才加入。
 function providerList() {
@@ -735,14 +734,14 @@ function refresh(manual) {
 var soundOn = true
 var soundVol = 0.9
 var soundSet = 'duck'
-var usageMode = 'ledger'
+var usageMode = 'token'
 function saveConfig() {
   try {
     apiSetConfig({ scale: state.scale, sound: soundOn, vol: soundVol, soundSet: soundSet, usageMode: usageMode, provider: state.provider })
   } catch (err) {}
 }
 function setUsageMode(v) {
-  usageMode = ['ledger', 'token', 'opencode'].indexOf(v) >= 0 ? v : 'ledger'
+  usageMode = ['token', 'opencode'].indexOf(v) >= 0 ? v : 'token'
   usageSelect.value = usageMode
   saveConfig()
   refresh(false)
@@ -1233,7 +1232,7 @@ function applyConfig(d) {
     applySoundSet()
   }
   if (d && typeof d.usageMode === 'string') {
-    usageMode = ['ledger', 'token', 'opencode'].indexOf(d.usageMode) >= 0 ? d.usageMode : 'ledger'
+    usageMode = ['token', 'opencode'].indexOf(d.usageMode) >= 0 ? d.usageMode : 'opencode'
     usageSelect.value = usageMode
   }
   if (d && typeof d.hasBailian === 'boolean') {
