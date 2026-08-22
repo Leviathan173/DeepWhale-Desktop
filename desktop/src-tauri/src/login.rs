@@ -43,7 +43,9 @@ fn spawn_browser(url: &str) -> Result<(Child, u16, std::path::PathBuf), String> 
     let child = Command::new(exe)
         .arg(format!("--remote-debugging-port={port}"))
         // 只放行本机调试页 origin，避免任意网站通过 `*` 嗅探登录态
-        .arg(format!("--remote-allow-origins=http://127.0.0.1:{port},http://localhost:{port}"))
+        .arg(format!(
+            "--remote-allow-origins=http://127.0.0.1:{port},http://localhost:{port}"
+        ))
         .arg(format!("--user-data-dir={}", profile.display()))
         .arg("--no-first-run")
         .arg("--no-default-browser-check")
@@ -215,15 +217,16 @@ async fn sniff_bailian(ws_url: &str, deadline: Instant) -> Result<BailianCreds, 
         };
         if let Message::Text(t) = msg {
             if let Ok(v) = serde_json::from_str::<Value>(&t) {
-                let method = v.get("method").and_then(|m| m.as_str()).unwrap_or("").to_string();
+                let method = v
+                    .get("method")
+                    .and_then(|m| m.as_str())
+                    .unwrap_or("")
+                    .to_string();
                 match method.as_str() {
                     "Network.requestWillBeSentExtraInfo" => {
                         // 该事件的 headers 里有登录 Cookie；所有 balian 请求共用同一会话 Cookie。
                         // 始终取最新（登录后才有 login_aliyunid，登录前只有匿名 cna）。
-                        if let Some(ck) = v
-                            .pointer("/params/headers")
-                            .and_then(extract_cookie)
-                        {
+                        if let Some(ck) = v.pointer("/params/headers").and_then(extract_cookie) {
                             if ck.contains("login_aliyunid") {
                                 cookie = Some(ck);
                             }
@@ -263,7 +266,10 @@ async fn sniff_bailian(ws_url: &str, deadline: Instant) -> Result<BailianCreds, 
                             .and_then(|r| r.as_str())
                             .map(str::to_string);
                         // 只对当前已认领的请求取响应体，且仅一次
-                        if rid.is_some() && request_id.as_deref() == rid.as_deref() && body_cmd.is_none() {
+                        if rid.is_some()
+                            && request_id.as_deref() == rid.as_deref()
+                            && body_cmd.is_none()
+                        {
                             body_cmd = Some(cmd_id);
                             let cid = cmd_id;
                             cmd_id += 1;
@@ -281,7 +287,11 @@ async fn sniff_bailian(ws_url: &str, deadline: Instant) -> Result<BailianCreds, 
                 // 命令回执：post data / response body 按各自记录的命令 id 归位；
                 // 出错（error 字段）即时返回，避免傻等 4 分钟超时。
                 if let Some(id) = v.get("id").and_then(|i| i.as_u64()) {
-                    if let Some(err) = v.get("error").and_then(|e| e.get("message")).and_then(|m| m.as_str()) {
+                    if let Some(err) = v
+                        .get("error")
+                        .and_then(|e| e.get("message"))
+                        .and_then(|m| m.as_str())
+                    {
                         if post_cmd == Some(id) || body_cmd == Some(id) {
                             return Err(format!("抓取失败：CDP 拒绝命令: {err}"));
                         }
@@ -289,12 +299,18 @@ async fn sniff_bailian(ws_url: &str, deadline: Instant) -> Result<BailianCreds, 
                     if post_cmd == Some(id) {
                         if let Some(pd) = v.pointer("/result/postData").and_then(|p| p.as_str()) {
                             if pd.is_empty() {
-                                return Err("抓取失败：用量接口请求体为空，请检查登录态".to_string());
+                                return Err(
+                                    "抓取失败：用量接口请求体为空，请检查登录态".to_string()
+                                );
                             }
                             post_data = Some(pd.to_string());
                         }
                     } else if body_cmd == Some(id) {
-                        if let Some(b) = v.get("result").and_then(|r| r.get("body")).and_then(|b| b.as_str()) {
+                        if let Some(b) = v
+                            .get("result")
+                            .and_then(|r| r.get("body"))
+                            .and_then(|b| b.as_str())
+                        {
                             sample = Some(b.to_string());
                         }
                     }
@@ -316,14 +332,16 @@ async fn sniff_bailian(ws_url: &str, deadline: Instant) -> Result<BailianCreds, 
 fn extract_cookie(headers: &Value) -> Option<String> {
     let obj = headers.as_object()?;
     let (_, v) = obj.iter().find(|(k, _)| k.eq_ignore_ascii_case("cookie"))?;
-    let s = v.as_str().map(str::to_string).or_else(|| {
-        v.as_array()?
-            .first()?
-            .as_str()
-            .map(str::to_string)
-    })?;
+    let s = v
+        .as_str()
+        .map(str::to_string)
+        .or_else(|| v.as_array()?.first()?.as_str().map(str::to_string))?;
     let t = s.trim();
-    if t.is_empty() { None } else { Some(t.to_string()) }
+    if t.is_empty() {
+        None
+    } else {
+        Some(t.to_string())
+    }
 }
 
 async fn sniff_auth_header(ws_url: &str, deadline: Instant) -> Result<String, String> {
@@ -334,7 +352,9 @@ async fn sniff_auth_header(ws_url: &str, deadline: Instant) -> Result<String, St
     let (mut ws, _) = connect_async(ws_url).await.map_err(|e| e.to_string())?;
     // CDP：id 从 1 开始顺序发命令
     ws.send(Message::Text(
-        json!({ "id": 1, "method": "Network.enable", "params": {} }).to_string().into(),
+        json!({ "id": 1, "method": "Network.enable", "params": {} })
+            .to_string()
+            .into(),
     ))
     .await
     .map_err(|e| e.to_string())?;
@@ -371,15 +391,19 @@ async fn sniff_auth_header(ws_url: &str, deadline: Instant) -> Result<String, St
 fn extract_authorization(headers: &Value) -> Option<String> {
     let obj = headers.as_object()?;
     // CDP request.headers 的键是小写，这里不区分大小写找 Authorization
-    let (_, v) = obj.iter().find(|(k, _)| k.eq_ignore_ascii_case("authorization"))?;
-    let s = v.as_str().map(str::to_string).or_else(|| {
-        v.as_array()?
-            .first()?
-            .as_str()
-            .map(str::to_string)
-    })?;
+    let (_, v) = obj
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case("authorization"))?;
+    let s = v
+        .as_str()
+        .map(str::to_string)
+        .or_else(|| v.as_array()?.first()?.as_str().map(str::to_string))?;
     let t = s.trim().trim_start_matches("Bearer").trim();
-    if t.is_empty() { None } else { Some(t.to_string()) }
+    if t.is_empty() {
+        None
+    } else {
+        Some(t.to_string())
+    }
 }
 
 #[cfg(test)]

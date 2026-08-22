@@ -65,13 +65,10 @@ pub fn discover_api_keys() -> Vec<(String, String)> {
         if let Ok(v) = serde_json::from_str::<Value>(&s) {
             if let Some(map) = v.as_object() {
                 for (prov, val) in map {
-                    let key = val
-                        .get("key")
-                        .and_then(|x| x.as_str())
-                        .unwrap_or("")
-                        .trim();
+                    let key = val.get("key").and_then(|x| x.as_str()).unwrap_or("").trim();
                     if !key.is_empty() {
-                        out.entry(prov.to_ascii_lowercase()).or_insert_with(|| key.to_string());
+                        out.entry(prov.to_ascii_lowercase())
+                            .or_insert_with(|| key.to_string());
                     }
                 }
             }
@@ -101,7 +98,8 @@ pub fn discover_api_keys() -> Vec<(String, String)> {
                     {
                         let key = key.trim();
                         if !key.is_empty() {
-                            out.entry(prov.to_ascii_lowercase()).or_insert_with(|| key.to_string());
+                            out.entry(prov.to_ascii_lowercase())
+                                .or_insert_with(|| key.to_string());
                         }
                     }
                 }
@@ -158,7 +156,9 @@ pub fn today_cost(db: &Path, providers: &[ProviderCfg]) -> Option<(f64, f64)> {
         .ok()?;
     let since = today_start_ms();
     let rows = stmt
-        .query_map([since], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))
+        .query_map([since], |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+        })
         .ok()?;
 
     let mut cost = 0.0;
@@ -169,7 +169,9 @@ pub fn today_cost(db: &Path, providers: &[ProviderCfg]) -> Option<(f64, f64)> {
         let Ok(v) = serde_json::from_str::<Value>(&data) else {
             continue;
         };
-        let Some(tokens) = v.get("tokens") else { continue };
+        let Some(tokens) = v.get("tokens") else {
+            continue;
+        };
         let raw = |k: &str| tokens.get(k).and_then(|x| x.as_i64()).unwrap_or(0);
         let cached_read = tokens
             .get("cache")
@@ -178,9 +180,7 @@ pub fn today_cost(db: &Path, providers: &[ProviderCfg]) -> Option<(f64, f64)> {
             .unwrap_or(0);
         let cache_created = tokens
             .get("cache")
-            .and_then(|c| {
-                c.get("creation").or_else(|| c.get("write"))
-            })
+            .and_then(|c| c.get("creation").or_else(|| c.get("write")))
             .and_then(|x| x.as_i64())
             .unwrap_or(0);
         let input = raw("input");
@@ -202,7 +202,11 @@ pub fn today_cost(db: &Path, providers: &[ProviderCfg]) -> Option<(f64, f64)> {
             continue; // 套餐/未配置供应商：不计金额
         };
         found = true;
-        let pi = if u.peak { usize::from(is_peak_time(ts / 1000)) } else { 0 };
+        let pi = if u.peak {
+            usize::from(is_peak_time(ts / 1000))
+        } else {
+            0
+        };
         total_tokens += n;
         cost += (cached_read as f64) / 1e6 * u.hit[pi]
             + (cache_created as f64) / 1e6 * u.create[pi]
@@ -270,11 +274,26 @@ mod tests {
             models: vec![],
         }];
 
-        insert(&c, "a", now, &msg("deepseek-v4-flash-0731", 1_000_000, 0, 0, 0));
+        insert(
+            &c,
+            "a",
+            now,
+            &msg("deepseek-v4-flash-0731", 1_000_000, 0, 0, 0),
+        );
         insert(&c, "b", now + 1, &msg("deepseek-v4-flash-0731", 0, 0, 0, 0));
-        insert(&c, "y", now - 86_400_000, &msg("deepseek-v4-flash-0731", 999_999_999, 0, 0, 0));
+        insert(
+            &c,
+            "y",
+            now - 86_400_000,
+            &msg("deepseek-v4-flash-0731", 999_999_999, 0, 0, 0),
+        );
         insert(&c, "g", now, &msg("gpt-4o", 999_999_999, 0, 0, 0));
-        insert(&c, "d", now + 2, &msg("deepseek-v4-flash-0731", 0, 500_000, 200_000, 100_000));
+        insert(
+            &c,
+            "d",
+            now + 2,
+            &msg("deepseek-v4-flash-0731", 0, 500_000, 200_000, 100_000),
+        );
 
         let (cost, tokens) = today_cost(&db, &providers).unwrap();
         let expect = 1_000_000.0 / 1e6 * p.hit[pi]

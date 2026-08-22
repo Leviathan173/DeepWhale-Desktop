@@ -74,20 +74,20 @@ fn create_main_window(app: &mut tauri::App) -> tauri::Result<()> {
     let (sw, sh) = screen_logical(app)?;
     let base = whale_base(sw, sh, cfg.scale.clamp(1.0, 2.5));
     tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::App("index.html".into()))
-            .title("DSH 小鲸鱼余额")
-            .transparent(true)
-            .decorations(false)
-            .always_on_top(true)
-            .skip_taskbar(true)
-            .shadow(false)
-            .resizable(false)
-            .minimizable(false)
-            .maximizable(false)
-            .closable(false)
-            .focused(false)
-            .inner_size(base, base)
-            .position(sw - base, sh - base)
-            .build()?;
+        .title("DSH 小鲸鱼余额")
+        .transparent(true)
+        .decorations(false)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .shadow(false)
+        .resizable(false)
+        .minimizable(false)
+        .maximizable(false)
+        .closable(false)
+        .focused(false)
+        .inner_size(base, base)
+        .position(sw - base, sh - base)
+        .build()?;
     Ok(())
 }
 
@@ -205,13 +205,18 @@ fn set_config(app: tauri::AppHandle, payload: Value) -> Result<Value, String> {
         .unwrap_or(1.0)
         .clamp(1.0, 2.5);
     let sound = get("sound").and_then(|v| v.as_bool()).unwrap_or(true);
-    let vol = get("vol").and_then(|v| v.as_f64()).unwrap_or(0.9).clamp(0.0, 1.0);
+    let vol = get("vol")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.9)
+        .clamp(0.0, 1.0);
     let sound_set = get("soundSet").and_then(|v| v.as_str()).unwrap_or("duck");
     let usage_mode = get("usageMode")
         .and_then(|v| v.as_str())
         .unwrap_or("ledger");
     let opencode_db = get("opencodeDb").and_then(|v| v.as_str()).unwrap_or("");
-    let provider = get("provider").and_then(|v| v.as_str()).unwrap_or("deepseek");
+    let provider = get("provider")
+        .and_then(|v| v.as_str())
+        .unwrap_or("deepseek");
     let st = app.state::<AppState>();
     let _g = st.cfg.lock().unwrap_or_else(|e| e.into_inner());
     let dir = &st.dir;
@@ -276,7 +281,11 @@ async fn capture_bailian_credentials(app: tauri::AppHandle) -> Result<Value, Str
         }
     }
     let _g = st.cfg.lock().unwrap_or_else(|e| e.into_inner());
-    config::write_bailian_credentials(&dir, Some(creds.cookie.clone()), Some(creds.post_data.clone()));
+    config::write_bailian_credentials(
+        &dir,
+        Some(creds.cookie.clone()),
+        Some(creds.post_data.clone()),
+    );
     if let Some(win) = app.get_webview_window("main") {
         let _ = win.emit("refresh-balance", ());
     }
@@ -297,7 +306,9 @@ fn save_bailian_credentials(
     let _g = st.cfg.lock().unwrap_or_else(|e| e.into_inner());
     let dir = &st.dir;
     let cfg = config::read(dir);
-    let cookie = b_cookie.filter(|s| !s.trim().is_empty()).or(cfg.bailian_cookie);
+    let cookie = b_cookie
+        .filter(|s| !s.trim().is_empty())
+        .or(cfg.bailian_cookie);
     let post_data = b_post_data
         .filter(|s| !s.trim().is_empty())
         .or(cfg.bailian_post_data);
@@ -311,7 +322,9 @@ fn get_usage_providers(app: tauri::AppHandle) -> Value {
     let st = app.state::<AppState>();
     let _g = st.cfg.lock().unwrap_or_else(|e| e.into_inner());
     let cfg = config::read(&st.dir);
-    json!(cfg.usage_providers.unwrap_or_else(pricing::default_providers))
+    json!(cfg
+        .usage_providers
+        .unwrap_or_else(pricing::default_providers))
 }
 
 /// 保存计价表。
@@ -333,25 +346,41 @@ fn auto_discover_pricing(app: tauri::AppHandle) -> Value {
     let cfg = config::read(&st.dir);
     let mut providers: Vec<ProviderCfg> = cfg.usage_providers.clone().unwrap_or_default();
 
-    let find_prov = |name: &str, metric: bool, peak: bool, providers: &mut Vec<ProviderCfg>| -> usize {
-        let lower = name.to_ascii_lowercase();
-        match providers.iter().position(|p| p.name.eq_ignore_ascii_case(&lower)) {
-            Some(i) => i,
-            None => {
-                providers.push(ProviderCfg { name: lower, metric, peak, models: vec![] });
-                providers.len() - 1
+    let find_prov =
+        |name: &str, metric: bool, peak: bool, providers: &mut Vec<ProviderCfg>| -> usize {
+            let lower = name.to_ascii_lowercase();
+            match providers
+                .iter()
+                .position(|p| p.name.eq_ignore_ascii_case(&lower))
+            {
+                Some(i) => i,
+                None => {
+                    providers.push(ProviderCfg {
+                        name: lower,
+                        metric,
+                        peak,
+                        models: vec![],
+                    });
+                    providers.len() - 1
+                }
             }
-        }
-    };
+        };
     let add_model = |providers: &mut Vec<ProviderCfg>, pi: usize, model: &str| {
         let pat = model.to_ascii_lowercase();
         if pat.is_empty() {
             return;
         }
-        if providers[pi].models.iter().any(|m| m.pattern.eq_ignore_ascii_case(&pat)) {
+        if providers[pi]
+            .models
+            .iter()
+            .any(|m| m.pattern.eq_ignore_ascii_case(&pat))
+        {
             return;
         }
-        providers[pi].models.push(ModelPriceCfg { pattern: pat, ..Default::default() });
+        providers[pi].models.push(ModelPriceCfg {
+            pattern: pat,
+            ..Default::default()
+        });
     };
 
     // 已知真实模型名的集合：用于清掉残留泛化 pattern（精确匹配下它们永远不命中）。
@@ -377,7 +406,8 @@ fn auto_discover_pricing(app: tauri::AppHandle) -> Value {
     // 精确匹配：丢弃全 None（未填单价）且不在 known 里的旧泛化项（如 config 残留
     // deepseek/longcat/qwen）；保留用户显式填了任一单价的条目。
     for p in &mut providers {
-        p.models.retain(|m| m.priced() || known.contains(&m.pattern.to_ascii_lowercase()));
+        p.models
+            .retain(|m| m.priced() || known.contains(&m.pattern.to_ascii_lowercase()));
     }
     // 丢弃没有任何模型的空供应商（纯配置残留，如旧版 tokenplan/anthropic），
     // 空的也匹配不到任何事件，留在表里只是噪音。
@@ -395,7 +425,16 @@ fn auto_discover_pricing(app: tauri::AppHandle) -> Value {
     // 标记 true 供界面提示「已发现」，避免把整串凭据暴露给 webview。
     let keys: serde_json::Map<String, Value> = keys
         .into_iter()
-        .map(|(k, v)| (k.clone(), if k == "deepseek" { json!(v) } else { json!(true) }))
+        .map(|(k, v)| {
+            (
+                k.clone(),
+                if k == "deepseek" {
+                    json!(v)
+                } else {
+                    json!(true)
+                },
+            )
+        })
         .collect();
     json!({ "providers": providers, "apiKeys": keys })
 }

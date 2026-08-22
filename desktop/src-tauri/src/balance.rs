@@ -119,7 +119,10 @@ async fn fetch_bailian_subscription(
         .header("content-type", "application/x-www-form-urlencoded")
         .header("cookie", cookie)
         .header("origin", "https://bailian.console.aliyun.com")
-        .header("referer", "https://bailian.console.aliyun.com/cn-beijing?tab=plan")
+        .header(
+            "referer",
+            "https://bailian.console.aliyun.com/cn-beijing?tab=plan",
+        )
         .body(post_data.to_string())
         .timeout(Duration::from_secs(10))
         .send()
@@ -383,7 +386,8 @@ mod tests {
     #[test]
     fn bailian_sample_shape_parsed() {
         // 实测用量接口响应：per1WeekPercentage + per1WeekResetTime(ms)
-        let body: Value = serde_json::from_str(r#"{
+        let body: Value = serde_json::from_str(
+            r#"{
             "code": "200",
             "data": {
                 "DataV2": {
@@ -407,7 +411,8 @@ mod tests {
             },
             "httpStatusCode": "200",
             "successResponse": true
-        }"#)
+        }"#,
+        )
         .unwrap();
         let out = parse_bailian_subscription(&body);
         assert_eq!(out["ok"], true);
@@ -418,7 +423,8 @@ mod tests {
     #[test]
     fn bailian_sample_subscription_shape() {
         // 订阅接口：remainingDays / endTime 也应被提取
-        let body: Value = serde_json::from_str(r#"{
+        let body: Value = serde_json::from_str(
+            r#"{
             "code": "200",
             "data": {
                 "DataV2": { "data": { "data": {
@@ -434,7 +440,8 @@ mod tests {
             },
             "httpStatusCode": "200",
             "successResponse": true
-        }"#)
+        }"#,
+        )
         .unwrap();
         let out = parse_bailian_subscription(&body);
         assert_eq!(out["ok"], true);

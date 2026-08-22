@@ -91,11 +91,23 @@ pub fn qwen_cny(model: &str) -> Option<&'static CnyPrices> {
     }
     // preview 模型按同代 max 档计价（见函数注释）
     if m.contains("max") || m.contains("preview") {
-        Some(&CnyPrices { hit: 0.405, miss: 4.05, out: 9.45 })
+        Some(&CnyPrices {
+            hit: 0.405,
+            miss: 4.05,
+            out: 9.45,
+        })
     } else if m.contains("plus") {
-        Some(&CnyPrices { hit: 0.15, miss: 1.5, out: 4.5 })
+        Some(&CnyPrices {
+            hit: 0.15,
+            miss: 1.5,
+            out: 4.5,
+        })
     } else {
-        Some(&CnyPrices { hit: 0.05, miss: 0.5, out: 2.0 })
+        Some(&CnyPrices {
+            hit: 0.05,
+            miss: 0.5,
+            out: 2.0,
+        })
     }
 }
 
@@ -143,9 +155,18 @@ pub fn default_providers() -> Vec<crate::config::ProviderCfg> {
             metric: false,
             peak: false,
             models: vec![
-                ModelPriceCfg { pattern: "deepseek".into(), ..Default::default() },
-                ModelPriceCfg { pattern: "longcat".into(), ..Default::default() },
-                ModelPriceCfg { pattern: "qwen".into(), ..Default::default() },
+                ModelPriceCfg {
+                    pattern: "deepseek".into(),
+                    ..Default::default()
+                },
+                ModelPriceCfg {
+                    pattern: "longcat".into(),
+                    ..Default::default()
+                },
+                ModelPriceCfg {
+                    pattern: "qwen".into(),
+                    ..Default::default()
+                },
             ],
         },
         ProviderCfg {
@@ -175,7 +196,13 @@ pub fn builtin_unit(model: &str) -> Option<UnitPrice> {
     let m = model.to_ascii_lowercase();
     if m.contains("deepseek") {
         let p = price_for(model);
-        Some(UnitPrice { hit: p.hit, miss: p.miss, out: p.out, create: p.miss, peak: true })
+        Some(UnitPrice {
+            hit: p.hit,
+            miss: p.miss,
+            out: p.out,
+            create: p.miss,
+            peak: true,
+        })
     } else if m.contains("claude") {
         claude_usd(model).map(|p| UnitPrice {
             hit: [p.cache_read * USD_TO_CNY; 2],
@@ -197,8 +224,13 @@ pub fn builtin_unit(model: &str) -> Option<UnitPrice> {
     }
 }
 
-const ZERO_UNIT: UnitPrice =
-    UnitPrice { hit: [0.0; 2], miss: [0.0; 2], out: [0.0; 2], create: [0.0; 2], peak: false };
+const ZERO_UNIT: UnitPrice = UnitPrice {
+    hit: [0.0; 2],
+    miss: [0.0; 2],
+    out: [0.0; 2],
+    create: [0.0; 2],
+    peak: false,
+};
 
 /// 模型名精确匹配（忽略大小写）。不用子串：pattern 即模型全名，避免泛化误归。
 fn model_matches(patterns: &[crate::config::ModelPriceCfg], model: &str) -> bool {
@@ -215,7 +247,10 @@ pub fn resolve_unit(
     provider: Option<&str>,
 ) -> Option<UnitPrice> {
     use crate::config::ProviderCfg;
-    let clamp_peak = |u: UnitPrice, peak: bool| UnitPrice { peak: u.peak && peak, ..u };
+    let clamp_peak = |u: UnitPrice, peak: bool| UnitPrice {
+        peak: u.peak && peak,
+        ..u
+    };
     // 1) 有 providerID：按供应商名精确匹配（opencode 数据）
     if let Some(pid) = provider {
         if let Some(p) = providers.iter().find(|p| p.name.eq_ignore_ascii_case(pid)) {
@@ -224,7 +259,9 @@ pub fn resolve_unit(
             }
             // 供应商已匹配但模型无内置价：0 元仍统计（与 claude jsonl 缺失
             // providerID 时的行为不同，但那属数据源差异，这里保留统计语义）
-            let u = model_unit(p, model).or_else(|| builtin_unit(model)).unwrap_or(ZERO_UNIT);
+            let u = model_unit(p, model)
+                .or_else(|| builtin_unit(model))
+                .unwrap_or(ZERO_UNIT);
             return Some(clamp_peak(u, p.peak));
         }
     }
@@ -236,7 +273,9 @@ pub fn resolve_unit(
         if !p.metric {
             return None;
         }
-        let u = model_unit(p, model).or_else(|| builtin_unit(model)).unwrap_or(ZERO_UNIT);
+        let u = model_unit(p, model)
+            .or_else(|| builtin_unit(model))
+            .unwrap_or(ZERO_UNIT);
         return Some(clamp_peak(u, p.peak));
     }
     // 3) 兜底：deepseek/claude/qwen 系仍按内置价目计（按量）；其余不计。
@@ -245,7 +284,10 @@ pub fn resolve_unit(
 
 fn model_unit(p: &crate::config::ProviderCfg, model: &str) -> Option<UnitPrice> {
     let m = model.to_ascii_lowercase();
-    let c = p.models.iter().find(|c| m == c.pattern.to_ascii_lowercase())?;
+    let c = p
+        .models
+        .iter()
+        .find(|c| m == c.pattern.to_ascii_lowercase())?;
     if !c.priced() {
         return None;
     }
@@ -375,7 +417,10 @@ mod tests {
             name: "bailian".into(),
             metric: false, // 套餐制
             peak: false,
-            models: vec![ModelPriceCfg { pattern: "deepseek".into(), ..Default::default() }],
+            models: vec![ModelPriceCfg {
+                pattern: "deepseek".into(),
+                ..Default::default()
+            }],
         }];
         // 按供应商名精确匹配 → 套餐不计（None）。
         assert!(resolve_unit(&plan, "deepseek-v4-flash-0731", Some("bailian")).is_none());

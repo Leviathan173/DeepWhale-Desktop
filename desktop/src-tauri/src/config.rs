@@ -129,7 +129,12 @@ impl AppConfig {
         }
         .to_string();
         self.usage_mode = normalize(&self.usage_mode).to_string();
-        self.provider = if self.provider == "bailian" { "bailian" } else { "deepseek" }.to_string();
+        self.provider = if self.provider == "bailian" {
+            "bailian"
+        } else {
+            "deepseek"
+        }
+        .to_string();
         self
     }
 }
@@ -193,8 +198,12 @@ pub fn write_credentials(dir: &Path, api_key: Option<String>, platform_token: Op
 /// 只改百炼凭据。
 pub fn write_bailian_credentials(dir: &Path, cookie: Option<String>, post_data: Option<String>) {
     let mut cfg = read(dir);
-    cfg.bailian_cookie = cookie.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
-    cfg.bailian_post_data = post_data.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+    cfg.bailian_cookie = cookie
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    cfg.bailian_post_data = post_data
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
     write_file(dir, &cfg);
 }
 

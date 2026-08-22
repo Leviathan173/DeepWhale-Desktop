@@ -102,7 +102,11 @@ fn parse_event(line: &str, today_start: i64) -> Option<(i64, String, i64, i64, i
     if ts_ms < today_start {
         return None;
     }
-    let model = msg.get("model").and_then(|x| x.as_str()).unwrap_or("").to_string();
+    let model = msg
+        .get("model")
+        .and_then(|x| x.as_str())
+        .unwrap_or("")
+        .to_string();
     let u = msg.get("usage")?;
     let n = |k: &str| u.get(k).and_then(|x| x.as_i64()).unwrap_or(0);
     Some((
@@ -145,7 +149,11 @@ pub fn today_cost(dir: Option<&Path>, providers: &[ProviderCfg]) -> Option<(f64,
                 continue; // claude 套餐/未配置：不计金额
             };
             found = true;
-            let pi = if u.peak { usize::from(crate::pricing::is_peak_time(ts_ms / 1000)) } else { 0 };
+            let pi = if u.peak {
+                usize::from(crate::pricing::is_peak_time(ts_ms / 1000))
+            } else {
+                0
+            };
             cost += (cache_read as f64) / 1e6 * u.hit[pi]
                 + (cache_create as f64) / 1e6 * u.create[pi]
                 + (input as f64) / 1e6 * u.miss[pi]
@@ -197,7 +205,10 @@ mod tests {
             metric: true,
             peak: false,
             models: vec![
-                ModelPriceCfg { pattern: "deepseek-v4-flash".into(), ..Default::default() },
+                ModelPriceCfg {
+                    pattern: "deepseek-v4-flash".into(),
+                    ..Default::default()
+                },
                 ModelPriceCfg {
                     pattern: "longcat-2.0".into(),
                     input: Some(0.5),
@@ -218,7 +229,10 @@ mod tests {
             name: "claude".into(),
             metric: true,
             peak: false,
-            models: vec![ModelPriceCfg { pattern: "deepseek".into(), ..Default::default() }],
+            models: vec![ModelPriceCfg {
+                pattern: "deepseek".into(),
+                ..Default::default()
+            }],
         }];
         let (cost, tokens) = today_cost(Some(&dir), &providers).unwrap();
         assert!((cost - 1_000_000.0 / 1e6 * 1.5).abs() < 1e-9, "cost {cost}");
