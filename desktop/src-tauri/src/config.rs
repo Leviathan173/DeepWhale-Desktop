@@ -24,6 +24,9 @@ pub struct AppConfig {
     pub platform_token: Option<String>,
     /// 可选的 opencode.db 路径覆盖（留空 → 默认 ~/.local/share/opencode/opencode.db）。
     pub opencode_db: Option<String>,
+    /// 本地记账里「未知名别名模型」（如 LongCat-2.0 代理别名）的单折价：
+    /// CNY / 百万 token，作用于该类模型的全部 token。None → 这类模型不计钱。
+    pub unknown_price_per_m: Option<f64>,
 }
 
 impl Default for AppConfig {
@@ -37,6 +40,7 @@ impl Default for AppConfig {
             api_key: None,
             platform_token: None,
             opencode_db: None,
+            unknown_price_per_m: None,
         }
     }
 }

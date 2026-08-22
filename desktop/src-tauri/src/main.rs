@@ -3,6 +3,7 @@
 mod app_state;
 mod assets;
 mod balance;
+mod claude;
 mod config;
 mod ledger;
 mod login;

@@ -37,6 +37,69 @@ pub fn price_for(model: &str) -> &'static Prices {
     &BASE_PRICE
 }
 
+/// Anthropic 官方模型 USD 单价（每百万 token）。Claude Code 走官方直连时用；
+/// 当前配置是路由到百炼代理，这些一般不出现。hit= cache read, miss=未命中输入。
+/// ponytail: 汇率与价目硬编码，漂移需手动同步。
+pub const USD_TO_CNY: f64 = 7.2;
+
+pub struct UsdPrices {
+    pub input: f64,
+    pub output: f64,
+    pub cache_read: f64,
+    pub cache_write: f64,
+}
+
+macro_rules! usd_prices {
+    ($input:expr, $output:expr, $cache_read:expr, $cache_write:expr) => {
+        UsdPrices {
+            input: $input,
+            output: $output,
+            cache_read: $cache_read,
+            cache_write: $cache_write,
+        }
+    };
+}
+
+pub fn claude_usd(model: &str) -> Option<&'static UsdPrices> {
+    let m = model.to_ascii_lowercase();
+    if m.contains("opus") {
+        Some(&usd_prices![15.0, 75.0, 1.5, 18.75])
+    } else if m.contains("haiku") {
+        if m.contains("3-5") {
+            Some(&usd_prices![0.8, 4.0, 0.1, 1.0])
+        } else {
+            Some(&usd_prices![1.0, 5.0, 0.1, 1.25])
+        }
+    } else if m.contains("sonnet") {
+        Some(&usd_prices![3.0, 15.0, 0.3, 3.75])
+    } else {
+        None
+    }
+}
+
+/// 阿里云百炼 qwen 模型的 CNY 单价（每百万 token），qwen*=按 tier 匹配；
+/// preview 模型按同代 max 档计价。
+/// ponytail: 按 2025–2026 公开价目，漂移需手动同步。
+pub struct CnyPrices {
+    pub hit: f64,
+    pub miss: f64,
+    pub out: f64,
+}
+
+pub fn qwen_cny(model: &str) -> Option<&'static CnyPrices> {
+    let m = model.to_ascii_lowercase();
+    if !m.contains("qwen") {
+        return None;
+    }
+    if m.contains("max") {
+        Some(&CnyPrices { hit: 0.405, miss: 4.05, out: 9.45 })
+    } else if m.contains("plus") {
+        Some(&CnyPrices { hit: 0.15, miss: 1.5, out: 4.5 })
+    } else {
+        Some(&CnyPrices { hit: 0.05, miss: 0.5, out: 2.0 })
+    }
+}
+
 /// bucket time 为 epoch 秒；换算北京时间小时判断峰谷。
 pub fn is_peak_time(time_sec: i64) -> bool {
     let hour = time::OffsetDateTime::from_unix_timestamp(time_sec)

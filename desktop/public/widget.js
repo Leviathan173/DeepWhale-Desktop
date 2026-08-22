@@ -112,7 +112,7 @@ var usageSelect = document.createElement('select')
 usageSelect.className = 'dshwv-sound'
 usageSelect.appendChild(soundOpt('ledger', '小鲸鱼记账 (推荐)'))
 usageSelect.appendChild(soundOpt('token', '实时·令牌 (设置里自动获取)'))
-usageSelect.appendChild(soundOpt('opencode', '本地·opencode (读它自己的记账)'))
+usageSelect.appendChild(soundOpt('opencode', '本地·opencode+Claude (读本地记账)'))
 usageSelect.addEventListener('change', function () { setUsageMode(usageSelect.value) })
 var row1 = menuRow()
 row1.appendChild(menuLabel('大小'))

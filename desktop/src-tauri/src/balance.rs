@@ -3,7 +3,7 @@ use std::time::Duration;
 use time::format_description::well_known::Rfc3339;
 
 use crate::app_state::{AppState, BalanceCache};
-use crate::{config, ledger, opencode, pricing};
+use crate::{claude, config, ledger, opencode, pricing};
 use serde_json::{json, Value};
 
 pub const BALANCE_URL: &str = "https://api.deepseek.com/user/balance";
@@ -161,9 +161,17 @@ pub async fn get_balance_payload(state: &AppState) -> Value {
         }
     } else if mode == "opencode" {
         let db = opencode::db_path(cfg.opencode_db.as_deref());
-        match opencode::today_cost(&db) {
-            Some((cost, _)) => {
-                payload["todayUsage"] = json!(cost);
+        let unknown_ppm = cfg.unknown_price_per_m;
+        // 本地总账：opencode.db + Claude Code jsonl 叠加；两者都读不到才回退 ledger。
+        let cost = match (opencode::today_cost(&db), claude::today_cost(None, unknown_ppm)) {
+            (Some((a, _)), Some((b, _))) => Some(a + b),
+            (Some((a, _)), None) => Some(a),
+            (None, Some((b, _))) => Some(b),
+            (None, None) => None,
+        };
+        match cost {
+            Some(c) => {
+                payload["todayUsage"] = json!(c);
                 payload["usageMode"] = json!("opencode");
             }
             None => {

@@ -33,8 +33,8 @@ pub fn db_path(configured: Option<&str>) -> PathBuf {
     base
 }
 
-/// 本地今天 0 点对应的 epoch 毫秒，作为查询下界。
-fn today_start_ms() -> i64 {
+/// 本地今天 0 点对应的 epoch 毫秒，作为查询下界（claude.rs 也用）。
+pub(crate) fn today_start_ms() -> i64 {
     let now = time::OffsetDateTime::now_local().unwrap_or_else(|_| time::OffsetDateTime::now_utc());
     // 本地墙钟零点：必须带上本地时区偏移取 epoch，assume_utc 会按 UTC 解释导致窗口差 8h。
     let offset = now.offset();
