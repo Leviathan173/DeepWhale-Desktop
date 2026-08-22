@@ -76,12 +76,15 @@
     .bill input[type="radio"], .bill input[type="checkbox"] { width: auto; margin: 0; }
     .prov-title .del { margin-left: auto; white-space: nowrap; }
     #pricestatus { font-size: 12px; color: #2fa24c; margin-top: 8px; min-height: 16px; line-height: 1.5; }
-    table.mini { width: 100%; border-collapse: collapse; }
-    table.mini th, table.mini td { padding: 5px 12px; text-align: left; font-size: 12px; }
-    table.mini th { color: #7c8bc4; font-weight: normal; border-bottom: 1px solid rgba(32,49,112,.12); }
-    table.mini td input { padding: 5px 8px; font-size: 12px; box-sizing: border-box; }
+    table.mini { width: 100%; table-layout: fixed; border-collapse: collapse; }
+    table.mini th, table.mini td { padding: 4px 8px; text-align: left; font-size: 12px; }
+    table.mini th { color: #7c8bc4; font-weight: normal; font-size: 11px; border-bottom: 1px solid rgba(32,49,112,.12); }
+    table.mini td input { padding: 4px 6px; font-size: 12px; box-sizing: border-box; width: 100%; min-width: 0; }
     table.mini td input[type="text"] { width: 100%; }
-    table.mini td input[type="number"] { width: 130px; }
+    table.mini td input[type="number"] { width: 100%; }
+    /* 固定列宽分摊：模型列留宽，四列单价等分，删除列最窄 */
+    table.mini th:nth-child(1), table.mini td:nth-child(1) { width: 26%; }
+    table.mini th:nth-child(6), table.mini td:nth-child(6) { width: 30px; }
     .prov-models { padding: 8px 12px; }
     .prov.disabled .prov-models { opacity: .45; pointer-events: none; }
     .prov-note { font-size: 12px; color: #e0433f; padding: 0 12px 8px; }
