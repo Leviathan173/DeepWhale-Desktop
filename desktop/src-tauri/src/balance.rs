@@ -141,10 +141,14 @@ async fn fetch_bailian_subscription(
 /// 也兼容订阅接口（remainingDays / endTime），字段取哪个按抓到样本而定。
 fn parse_bailian_subscription(body: &Value) -> Value {
     let data = body.get("data").unwrap_or(body);
-    let success = data
-        .get("success")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
+    // 成功判断双保险：data.success 与顶层 successResponse 任一为 true 都视为成功；
+    // 均缺失或任一显式 false → 失败。
+    let data_success = data.get("success").and_then(|v| v.as_bool());
+    let outer_success = body.get("successResponse").and_then(|v| v.as_bool());
+    let success = matches!(
+        (data_success, outer_success),
+        (Some(true), None) | (None, Some(true)) | (Some(true), Some(true))
+    );
     if !success {
         let msg = data
             .get("errorMsg")
@@ -167,18 +171,15 @@ fn parse_bailian_subscription(body: &Value) -> Value {
     let mut end_time: Option<f64> = None;
 
     if let Some(inner) = inner {
-        if let (Some(p), Some(r)) = (
-            inner.get("per1WeekPercentage").and_then(|v| v.as_f64()),
-            inner.get("per1WeekResetTime"),
-        ) {
+        if let Some(p) = inner.get("per1WeekPercentage").and_then(|v| v.as_f64()) {
             percent_str = Some(format!("{:.1}%", (1.0 - p) * 100.0));
-            reset_at = r.as_f64();
+            reset_at = inner.get("per1WeekResetTime").and_then(num_or_str);
         }
-        if let Some(d) = inner.get("remainingDays").and_then(|v| v.as_f64()) {
+        if let Some(d) = inner.get("remainingDays").and_then(num_or_str) {
             remaining_days = Some(d);
         }
-        if let Some(t) = inner.get("endTime") {
-            end_time = t.as_f64();
+        if let Some(t) = inner.get("endTime").and_then(num_or_str) {
+            end_time = Some(t);
         }
     }
 
@@ -194,6 +195,12 @@ fn parse_bailian_subscription(body: &Value) -> Value {
     })
 }
 
+/// 数值字段可能是 JSON number 或数字字符串（毫秒时间戳尤其常见），统一转 f64。
+fn num_or_str(v: &Value) -> Option<f64> {
+    v.as_f64()
+        .or_else(|| v.as_str().and_then(|s| s.trim().parse::<f64>().ok()))
+}
+
 /// 组装完整 payload（记账/令牌双模式 + 峰谷标记 + 落缓存）。
 pub async fn get_balance_payload(state: &AppState) -> Value {
     // ponytail: 只取配置快照就释放锁，避免 std MutexGuard 跨 await（async 命令要求 Send）
@@ -203,7 +210,7 @@ pub async fn get_balance_payload(state: &AppState) -> Value {
     };
 
     // 百炼订阅（独立于 DeepSeek 的主流程）：有凭据才抓，全程并发跑，主余额不受拖累。
-    let bailian_task = match (cfg.bailian_cookie.clone(), cfg.bailian_post_data.clone()) {
+    let mut bailian_task = match (cfg.bailian_cookie.clone(), cfg.bailian_post_data.clone()) {
         (Some(ck), Some(pd)) => {
             let client = state.client.clone();
             Some(tokio::spawn(async move {
@@ -215,12 +222,20 @@ pub async fn get_balance_payload(state: &AppState) -> Value {
         }
         _ => None,
     };
-
     let Some(key) = cfg.api_key.clone() else {
+        // 已配置百炼却没配 DeepSeek key：先收百炼任务，前端仍能展示百炼数据
+        let bailian = match bailian_task.take() {
+            Some(t) => match t.await {
+                Ok(v) => v,
+                Err(e) => json!({ "ok": false, "error": format!("任务失败: {e}") }),
+            },
+            None => json!({ "ok": false, "configured": false }),
+        };
         return json!({
             "ok": false,
             "code": "NO_KEY",
-            "error": "未配置 API Key，请点鲸鱼菜单「设置 API Key」"
+            "error": "未配置 API Key，请点鲸鱼菜单「设置 API Key」",
+            "bailian": bailian,
         });
     };
 
@@ -234,7 +249,19 @@ pub async fn get_balance_payload(state: &AppState) -> Value {
                 v["error"] = json!(e);
                 return v;
             }
-            return json!({ "ok": false, "code": "HTTP", "error": format!("余额接口请求失败: {e}") });
+            let bailian = match bailian_task.take() {
+                Some(t) => match t.await {
+                    Ok(v) => v,
+                    Err(e) => json!({ "ok": false, "error": format!("任务失败: {e}") }),
+                },
+                None => json!({ "ok": false, "configured": false }),
+            };
+            return json!({
+                "ok": false,
+                "code": "HTTP",
+                "error": format!("余额接口请求失败: {e}"),
+                "bailian": bailian
+            });
         }
     };
 
@@ -297,7 +324,7 @@ pub async fn get_balance_payload(state: &AppState) -> Value {
     }
 
     // 百炼 TokenPlan（订阅制），收并发任务的尾。
-    payload["bailian"] = match bailian_task {
+    payload["bailian"] = match bailian_task.take() {
         Some(t) => match t.await {
             Ok(v) => v,
             Err(e) => json!({ "ok": false, "error": format!("任务失败: {e}") }),

@@ -129,6 +129,7 @@ impl AppConfig {
         }
         .to_string();
         self.usage_mode = normalize(&self.usage_mode).to_string();
+        self.provider = if self.provider == "bailian" { "bailian" } else { "deepseek" }.to_string();
         self
     }
 }

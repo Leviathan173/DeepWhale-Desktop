@@ -238,8 +238,6 @@ fn save_credentials(
     app: tauri::AppHandle,
     api_key: Option<String>,
     platform_token: Option<String>,
-    #[allow(unused_variables)] bailian_cookie: Option<String>,
-    #[allow(unused_variables)] bailian_post_data: Option<String>,
 ) -> Value {
     let st = app.state::<AppState>();
     let _g = st.cfg.lock().unwrap_or_else(|e| e.into_inner());
@@ -265,13 +263,15 @@ fn load_credentials(app: tauri::AppHandle) -> Value {
 async fn capture_bailian_credentials(app: tauri::AppHandle) -> Result<Value, String> {
     let creds = login::capture_bailian_credentials().await?;
     let st = app.state::<AppState>();
-    let _g = st.cfg.lock().unwrap_or_else(|e| e.into_inner());
-    let dir = &st.dir;
-    // 响应样本落盘，供解析器定稿（探索期调试用）。
-    if let Err(e) = std::fs::write(dir.join("bailian_sample.json"), &creds.sample) {
-        eprintln!("bailian sample write failed: {e}");
+    let dir = st.dir.clone();
+    // 响应样本仅调试构建落盘（探索期校验解析器用）；发布版不含敏感响应体。
+    if cfg!(debug_assertions) && !creds.sample.is_empty() {
+        if let Err(e) = std::fs::write(dir.join("bailian_sample.json"), &creds.sample) {
+            eprintln!("bailian sample write failed: {e}");
+        }
     }
-    config::write_bailian_credentials(dir, Some(creds.cookie.clone()), Some(creds.post_data.clone()));
+    let _g = st.cfg.lock().unwrap_or_else(|e| e.into_inner());
+    config::write_bailian_credentials(&dir, Some(creds.cookie.clone()), Some(creds.post_data.clone()));
     if let Some(win) = app.get_webview_window("main") {
         let _ = win.emit("refresh-balance", ());
     }

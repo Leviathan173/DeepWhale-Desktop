@@ -33,10 +33,7 @@
           hadBailBody = res.bailianPostData
         }
         bailMsg('已自动获取并保存百炼凭据 ✓')
-        try {
-          var e = window.__TAURI__ && window.__TAURI__.event
-          if (e && typeof e.emit === 'function') e.emit('refresh-balance')
-        } catch (err) {}
+        refreshBalance()
       }).catch(function (e) {
         bailMsg('失败：' + ((e && e.message) || '请尝试手动粘贴'), true)
       }).finally(function () { bailBtn.disabled = false })
@@ -51,10 +48,7 @@
         bPostData: ((bailBodyEl && bailBodyEl.value) || '').trim() || hadBailBody
       }).then(function () {
         bailMsg('百炼凭据已保存', false)
-        try {
-          var e = window.__TAURI__ && window.__TAURI__.event
-          if (e && typeof e.emit === 'function') e.emit('refresh-balance')
-        } catch (err) {}
+        refreshBalance()
       }).catch(function () { bailMsg('保存失败', true) })
     })
   }
@@ -67,6 +61,22 @@
   function tokMsg(t, err) {
     tokStatus.style.color = err ? '#e0433f' : '#2fa24c'
     tokStatus.textContent = t
+  }
+
+  function refreshBalance() {
+    try {
+      var e = window.__TAURI__ && window.__TAURI__.event
+      if (e && typeof e.emit === 'function') e.emit('refresh-balance')
+    } catch (err) {}
+  }
+
+  // 只清掉本 timer 对应的消息，避免快速连发时旧 timer 误清新消息
+  var bailMsgSeq = 0
+  function bailMsg(t, err) {
+    var seq = ++bailMsgSeq
+    bailStatus.style.color = err ? '#e0433f' : '#2fa24c'
+    bailStatus.textContent = t
+    setTimeout(function () { if (seq === bailMsgSeq) bailStatus.textContent = '' }, 2500)
   }
 
   if (tokBtn) {
@@ -108,8 +118,8 @@
     if (c) {
       if (c.apiKey) { apiEl.value = c.apiKey; hadKey = c.apiKey }
       if (c.platformToken) { tokEl.value = c.platformToken; hadToken = c.platformToken }
-      if (c.bailianCookie) { bailCookEl.value = c.bailianCookie; hadBailCookie = c.bailianCookie }
-      if (c.bailianPostData) { bailBodyEl.value = c.bailianPostData; hadBailBody = c.bailianPostData }
+      if (c.bailianCookie && bailCookEl) { bailCookEl.value = c.bailianCookie; hadBailCookie = c.bailianCookie }
+      if (c.bailianPostData && bailBodyEl) { bailBodyEl.value = c.bailianPostData; hadBailBody = c.bailianPostData }
     }
   }
   TAPI.invoke('load_credentials')

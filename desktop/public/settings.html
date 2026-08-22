@@ -154,6 +154,10 @@
         <input id="bailian-cookie" type="password" placeholder="留空=保留原值" autocomplete="off" />
         <label for="bailian-post-data">百炼订阅请求 Body（params=...&region=...&sec_token=...）</label>
         <textarea id="bailian-post-data" rows="3" placeholder="留空=保留原值"></textarea>
+        <div class="hint" id="bailian-sensitivity" style="color:#e0433f">
+          Cookie 与 Body 含登录会话凭据（sec_token 等），仅保存在本机 config.json；
+          请勿截图/分享，过期后重新自动获取即可。
+        </div>
         <div class="row">
           <button id="autobailian" class="ghost">自动获取百炼凭据</button>
           <button id="savebailian">保存百炼凭据</button>

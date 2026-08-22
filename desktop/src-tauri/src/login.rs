@@ -3,18 +3,22 @@
 //! Debug 令牌存下来。
 use serde_json::{json, Value};
 use std::process::{Child, Command};
+use std::sync::atomic::{AtomicU16, Ordering};
 use std::time::{Duration, Instant};
 
-pub const DEBUG_PORT: u16 = 9333;
+/// 每次拉起浏览器用独立调试端口 + 独立临时 profile，避免与残留实例
+/// 争用 profile SingletonLock 或端口（重试 / 连续两次抓取都会撞车）。
+static NEXT_PORT: AtomicU16 = AtomicU16::new(9333);
 
-fn json_url() -> String {
-    format!("http://127.0.0.1:{DEBUG_PORT}/json")
+fn json_url(port: u16) -> String {
+    format!("http://127.0.0.1:{port}/json")
 }
 
 /// 拉起 Edge/Chrome 到指定页面（独立临时 profile，不碰用户日常浏览器）。
-fn spawn_browser(url: &str) -> Result<Child, String> {
+fn spawn_browser(url: &str) -> Result<(Child, u16), String> {
+    let port = NEXT_PORT.fetch_add(1, Ordering::Relaxed);
     let mut path = std::env::temp_dir();
-    path.push(format!("dshwl-{}", std::process::id()));
+    path.push(format!("dshwl-{}-{}", std::process::id(), port));
     std::fs::create_dir_all(&path).map_err(|e| e.to_string())?;
     let profile = path.join("profile");
     std::fs::create_dir_all(&profile).map_err(|e| e.to_string())?;
@@ -25,12 +29,14 @@ fn spawn_browser(url: &str) -> Result<Child, String> {
         r"C:\Program Files\Google\Chrome\Application\chrome.exe",
         r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
     ];
-    let exe = candidates.iter().find(|p| std::path::Path::new(p).exists()).copied().ok_or(
-        "未找到 Edge/Chrome，请手动复制 Cookie 填入百炼输入框",
-    )?;
+    let exe = candidates
+        .iter()
+        .find(|p| std::path::Path::new(p).exists())
+        .copied()
+        .ok_or("未找到 Edge/Chrome，请按对应平台提示手动复制登录信息")?;
 
-    Command::new(exe)
-        .arg("--remote-debugging-port=9333")
+    let child = Command::new(exe)
+        .arg(format!("--remote-debugging-port={port}"))
         .arg("--remote-allow-origins=*")
         .arg(format!("--user-data-dir={}", profile.display()))
         .arg("--no-first-run")
@@ -38,18 +44,19 @@ fn spawn_browser(url: &str) -> Result<Child, String> {
         .arg("--disable-features=Translate,msEdgeShoppingAssist,AutofillServerCommunication")
         .arg(url)
         .spawn()
-        .map_err(|e| format!("浏览器启动失败: {e}"))
+        .map_err(|e| format!("浏览器启动失败: {e}"))?;
+    Ok((child, port))
 }
 
 pub async fn capture_platform_token() -> Result<String, String> {
     let client = reqwest::Client::new();
-    let mut child = spawn_browser("https://platform.deepseek.com/usage")?;
+    let (mut child, port) = spawn_browser("https://platform.deepseek.com/usage")?;
     let started = Instant::now();
     let deadline = started + Duration::from_secs(240);
 
     // 1. 等浏览器调试端口就绪 + 出现 platform 页 target
     let page_ws = loop {
-        if let Some(ws) = try_find_page(&client, "platform.deepseek.com").await {
+        if let Some(ws) = try_find_page(&client, port, "platform.deepseek.com").await {
             break ws;
         }
         if Instant::now() > deadline {
@@ -72,9 +79,9 @@ pub async fn capture_platform_token() -> Result<String, String> {
     Ok(token)
 }
 
-async fn try_find_page(client: &reqwest::Client, url_contains: &str) -> Option<String> {
+async fn try_find_page(client: &reqwest::Client, port: u16, url_contains: &str) -> Option<String> {
     let list = client
-        .get(json_url())
+        .get(json_url(port))
         .timeout(Duration::from_secs(2))
         .send()
         .await
@@ -106,14 +113,14 @@ pub struct BailianCreds {
 /// （登录后该页会自动请求这两个接口）。
 pub async fn capture_bailian_credentials() -> Result<BailianCreds, String> {
     let client = reqwest::Client::new();
-    let mut child = spawn_browser(
+    let (mut child, port) = spawn_browser(
         "https://bailian.console.aliyun.com/cn-beijing?tab=plan#/efm/subscription/token-plan/personal",
     )?;
     let started = Instant::now();
     let deadline = started + Duration::from_secs(240);
 
     let page_ws = loop {
-        if let Some(ws) = try_find_page(&client, "bailian.console.aliyun.com").await {
+        if let Some(ws) = try_find_page(&client, port, "bailian.console.aliyun.com").await {
             break ws;
         }
         if Instant::now() > deadline {
@@ -159,6 +166,10 @@ async fn sniff_bailian(ws_url: &str, deadline: Instant) -> Result<BailianCreds, 
     let mut request_id: Option<String> = None;
     let mut post_data: Option<String> = None;
     let mut sample: Option<String> = None;
+    // CDP 命令 id 必须单调递增；每个命令回执按 id 关联到对应请求。
+    let mut cmd_id: u64 = 2;
+    let mut post_cmd: Option<u64> = None;
+    let mut body_cmd: Option<u64> = None;
 
     while Instant::now() < deadline {
         let msg = tokio::select! {
@@ -199,9 +210,12 @@ async fn sniff_bailian(ws_url: &str, deadline: Instant) -> Result<BailianCreds, 
                                 .map(str::to_string)
                             {
                                 request_id = Some(rid.clone());
+                                post_cmd = Some(cmd_id);
+                                let cid = cmd_id;
+                                cmd_id += 1;
                                 // 主动拿完整 form body（含 params/sec_token）
                                 ws.send(Message::Text(
-                                    json!({ "id": 2, "method": "Network.getRequestPostData", "params": { "requestId": rid } })
+                                    json!({ "id": cid, "method": "Network.getRequestPostData", "params": { "requestId": rid } })
                                         .to_string()
                                         .into(),
                                 ))
@@ -215,9 +229,13 @@ async fn sniff_bailian(ws_url: &str, deadline: Instant) -> Result<BailianCreds, 
                             .pointer("/params/requestId")
                             .and_then(|r| r.as_str())
                             .map(str::to_string);
-                        if rid.is_some() && request_id.as_deref() == rid.as_deref() {
+                        // 只对当前已认领的请求取响应体，且仅一次
+                        if rid.is_some() && request_id.as_deref() == rid.as_deref() && body_cmd.is_none() {
+                            body_cmd = Some(cmd_id);
+                            let cid = cmd_id;
+                            cmd_id += 1;
                             ws.send(Message::Text(
-                                json!({ "id": 3, "method": "Network.getResponseBody", "params": { "requestId": rid } })
+                                json!({ "id": cid, "method": "Network.getResponseBody", "params": { "requestId": rid } })
                                     .to_string()
                                     .into(),
                             ))
@@ -227,16 +245,16 @@ async fn sniff_bailian(ws_url: &str, deadline: Instant) -> Result<BailianCreds, 
                     }
                     _ => {}
                 }
-                // 命令回执：id=2 post data，id=3 response body
+                // 命令回执：post data / response body 按各自记录的命令 id 归位
                 if let Some(id) = v.get("id").and_then(|i| i.as_u64()) {
-                    if id == 2 {
+                    if post_cmd == Some(id) {
                         if let Some(pd) = v.pointer("/result/postData").and_then(|p| p.as_str()) {
                             if pd.is_empty() {
                                 return Err("抓取失败：用量接口请求体为空，请检查登录态".to_string());
                             }
                             post_data = Some(pd.to_string());
                         }
-                    } else if id == 3 {
+                    } else if body_cmd == Some(id) {
                         if let Some(b) = v.get("result").and_then(|r| r.get("body")).and_then(|b| b.as_str()) {
                             sample = Some(b.to_string());
                         }

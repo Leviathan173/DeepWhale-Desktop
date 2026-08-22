@@ -258,6 +258,7 @@ function buildGroup1() {
     if (!b || !b.ok) {
       return [
         { t: '百炼 · 未配置', s: 'A', c: '' },
+        null,
         { t: '请在设置获取凭据', s: 'C', c: '' }
       ]
     }
@@ -295,8 +296,9 @@ function pickRandomLines() {
   return RANDOM_GROUPS[RANDOM_GROUPS.length - 1].lines()
 }
 function applyBubbleLines(lines) {
-  // 4 行为百炼（标签/子说明/金额/提示），其余按历史 3 槽（标签/金额/提示）。
-  var els = (lines && lines.length >= 4) ? [labelEl, subEl, amountEl, hintEl] : [labelEl, amountEl, hintEl]
+  // 是否有小字说明行（百炼专有）决定用 4 槽（标签/子说明/金额/提示）还是 3 槽（标签/金额/提示）。
+  var hasSub = !!(lines && Array.prototype.some.call(lines, function (l) { return l && l.s === 'S' }))
+  var els = hasSub ? [labelEl, subEl, amountEl, hintEl] : [labelEl, amountEl, hintEl]
   for (var i = 0; i < els.length; i++) {
     var el = els[i]
     var ln = lines && lines[i]
@@ -311,8 +313,11 @@ function applyBubbleLines(lines) {
       el.style.color = ''
     }
   }
-  // 非百炼时确保子行隐藏
-  if (!(lines && lines[1] && lines.length >= 4)) subEl.style.display = 'none'
+  // 没有 S 行（非百炼 / 百炼错误分支 / 随机 3 行段）时确保子行隐藏，避免残留脏数据
+  if (!hasSub) {
+    subEl.style.display = 'none'
+    subEl.textContent = ''
+  }
 }
 var bubbleSwapTimer = null
 var hintFadeTimer = null
@@ -452,6 +457,10 @@ function animateAmount(from, to, currency, duration) {
   animId = requestAnimationFrame(step)
 }
 function render() {
+  if (bubbleRandomActive && bubbleRandomLines) {
+    applyBubbleLines(bubbleRandomLines)
+    return
+  }
   var amount, hint
   labelEl.textContent = providerLabel()
   if (state.provider === 'bailian') {
@@ -462,9 +471,21 @@ function render() {
     } else if (!b || !b.ok) {
       amount = '--'
       hint = (b && b.error) ? (b.configured === false ? '未配置百炼 · 请在设置获取' : b.error.slice(0, 14)) : '未配置百炼'
+      applyBubbleLines([
+        { t: '百炼 · 未配置', s: 'A', c: '' },
+        null,
+        { t: hint, s: 'C', c: '' }
+      ])
+      return
     } else {
-      amount = b.remaining != null ? String(b.remaining) : '--'
-      hint = '重置 ' + fmtReset(b.resetAt)
+      // 百炼气泡 4 行：加粗标签 / 小字「周剩余额度」 / 剩余百分比 / 重置时间
+      applyBubbleLines([
+        { t: '百炼 TokenPlan', s: 'A', c: '' },
+        { t: '周剩余额度', s: 'S', c: '' },
+        { t: String(b.remaining != null ? b.remaining : '--'), s: 'B', c: '' },
+        { t: '重置 ' + fmtReset(b.resetAt), s: 'C', c: '' }
+      ])
+      return
     }
   } else if (state.status === 'error') {
     amount = shown !== null ? fmt(shown, state.currency) : '--'
@@ -477,21 +498,9 @@ function render() {
     hint = '今日已用 ' + (state.todayUsage !== null && state.todayUsage !== undefined ? fmt(state.todayUsage, state.currency) : '--')
   }
   amountEl.textContent = amount
-  if (state.provider === 'bailian') {
-    // 百炼气泡 4 行：加粗标签 / 小字说明 / 剩余百分比 / 重置时间
-    subEl.style.display = ''
-    subEl.className = BUBBLE_STYLE_CLASS.S || 'dshwv-sub'
-    subEl.textContent = '周剩余额度'
-    subEl.style.color = ''
-  } else {
-    subEl.style.display = 'none'
-    subEl.textContent = ''
-  }
-  if (bubbleRandomActive && bubbleRandomLines) {
-    applyBubbleLines(bubbleRandomLines)
-  } else {
-    setHint(hint)
-  }
+  subEl.style.display = 'none'
+  subEl.textContent = ''
+  setHint(hint)
 }
 // 小窗模型：state.left/top 是窗口在屏幕上的逻辑坐标；express 移动真实窗口。
 var winMove = null
