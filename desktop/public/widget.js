@@ -172,9 +172,14 @@ labelEl.className = 'dshwv-label'
 labelEl.textContent = '余额'
 var amountEl = document.createElement('div')
 amountEl.className = 'dshwv-amount'
+// 百炼气泡第 2 行的小字说明（周剩余额度）
+var subEl = document.createElement('div')
+subEl.className = 'dshwv-sub'
+subEl.style.display = 'none'
 var hintEl = document.createElement('div')
 hintEl.className = 'dshwv-hint'
 textBox.appendChild(labelEl)
+textBox.appendChild(subEl)
 textBox.appendChild(amountEl)
 textBox.appendChild(hintEl)
 
@@ -241,7 +246,7 @@ var bubbleShown = false
 var bubbleTimer = null
 var bubbleRandomActive = false
 var bubbleRandomLines = null
-var BUBBLE_STYLE_CLASS = { A: 'dshwv-label', B: 'dshwv-amount', P: 'dshwv-period', C: 'dshwv-hint' }
+var BUBBLE_STYLE_CLASS = { A: 'dshwv-label', B: 'dshwv-amount', P: 'dshwv-period', C: 'dshwv-hint', S: 'dshwv-sub' }
 function pickOne(arr) { return arr[Math.floor(Math.random() * arr.length)] }
 function singleCenter(style, text, color, wrap) { return [null, { t: text, s: style, c: color || '', w: !!wrap }, null] }
 function providerLabel() {
@@ -256,8 +261,10 @@ function buildGroup1() {
         { t: '请在设置获取凭据', s: 'C', c: '' }
       ]
     }
+    // 4 行：加粗标签 / 小字「周剩余额度」 / 剩余百分比 / 重置时间
     return [
-      { t: '百炼周额度剩余:', s: 'A', c: '' },
+      { t: '百炼 TokenPlan', s: 'A', c: '' },
+      { t: '周剩余额度', s: 'S', c: '' },
       { t: String(b.remaining != null ? b.remaining : '--'), s: 'B', c: '' },
       { t: '重置 ' + fmtReset(b.resetAt), s: 'C', c: '' }
     ]
@@ -288,8 +295,9 @@ function pickRandomLines() {
   return RANDOM_GROUPS[RANDOM_GROUPS.length - 1].lines()
 }
 function applyBubbleLines(lines) {
-  var els = [labelEl, amountEl, hintEl]
-  for (var i = 0; i < 3; i++) {
+  // 4 行为百炼（标签/子说明/金额/提示），其余按历史 3 槽（标签/金额/提示）。
+  var els = (lines && lines.length >= 4) ? [labelEl, subEl, amountEl, hintEl] : [labelEl, amountEl, hintEl]
+  for (var i = 0; i < els.length; i++) {
     var el = els[i]
     var ln = lines && lines[i]
     if (ln) {
@@ -303,6 +311,8 @@ function applyBubbleLines(lines) {
       el.style.color = ''
     }
   }
+  // 非百炼时确保子行隐藏
+  if (!(lines && lines[1] && lines.length >= 4)) subEl.style.display = 'none'
 }
 var bubbleSwapTimer = null
 var hintFadeTimer = null
@@ -454,7 +464,7 @@ function render() {
       hint = (b && b.error) ? (b.configured === false ? '未配置百炼 · 请在设置获取' : b.error.slice(0, 14)) : '未配置百炼'
     } else {
       amount = b.remaining != null ? String(b.remaining) : '--'
-      hint = '周剩余额度 · 重置 ' + fmtReset(b.resetAt)
+      hint = '重置 ' + fmtReset(b.resetAt)
     }
   } else if (state.status === 'error') {
     amount = shown !== null ? fmt(shown, state.currency) : '--'
@@ -467,6 +477,16 @@ function render() {
     hint = '今日已用 ' + (state.todayUsage !== null && state.todayUsage !== undefined ? fmt(state.todayUsage, state.currency) : '--')
   }
   amountEl.textContent = amount
+  if (state.provider === 'bailian') {
+    // 百炼气泡 4 行：加粗标签 / 小字说明 / 剩余百分比 / 重置时间
+    subEl.style.display = ''
+    subEl.className = BUBBLE_STYLE_CLASS.S || 'dshwv-sub'
+    subEl.textContent = '周剩余额度'
+    subEl.style.color = ''
+  } else {
+    subEl.style.display = 'none'
+    subEl.textContent = ''
+  }
   if (bubbleRandomActive && bubbleRandomLines) {
     applyBubbleLines(bubbleRandomLines)
   } else {
