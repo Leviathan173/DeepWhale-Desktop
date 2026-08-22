@@ -1,10 +1,13 @@
 //! DeepSeek 价目换算：从 OLD lib/index.js 直译。
 //! 高峰时段：每日 9:00–12:00 和 14:00–18:00（北京时间）。
+//! ponytail: 价格表按官方价目硬编码（2025 年），改价需同步更新；若定价漂移会导致
+//! token 实时用量模式的费用/余额换算不准。记账模式不受影响。
 use serde_json::Value;
 
 pub const PEAK_HOURS: [[i32; 2]; 2] = [[9, 12], [14, 18]];
 
 /// CNY 每百万 token 价格：[空闲时段价, 高峰时段价]
+/// （deepseek-chat/v4-flash/v4-pro/reasoner 目前共享；分模型定价后再拆。）
 pub struct Prices {
     pub hit: [f64; 2],
     pub miss: [f64; 2],

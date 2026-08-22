@@ -32,50 +32,44 @@ pub fn cached_payload(state: &AppState) -> Option<Value> {
 }
 
 async fn fetch_balance(client: &reqwest::Client, api_key: &str) -> Result<(f64, String), String> {
-    let mut last_err: Option<String> = None;
-    for attempt in 0..2 {
-        let resp = client
-            .get(BALANCE_URL)
-            .header("Authorization", format!("Bearer {api_key}"))
-            .timeout(Duration::from_secs(20))
-            .send()
-            .await;
-        match resp {
-            Ok(r) => {
-                let status = r.status();
-                if status.is_success() {
-                    let body: Value = r
-                        .json()
-                        .await
-                        .map_err(|e| format!("余额接口返回不是合法 JSON: {e}"))?;
-                    let info = body
-                        .get("balance_infos")
-                        .and_then(|v| v.as_array())
-                        .and_then(|a| a.first())
-                        .ok_or("余额接口返回结构异常")?;
-                    let total = info
-                        .get("total_balance")
-                        .and_then(|v| v.as_f64())
-                        .ok_or("余额接口 total_balance 缺失")?;
-                    let currency = info
-                        .get("currency")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("CNY")
-                        .to_string();
-                    return Ok((total, currency));
-                }
-                last_err = Some(format!("HTTP {}", status.as_u16()));
-                if status.as_u16() < 500 {
-                    break;
-                }
+    // ponytail: 前端 busy 会挡住手动刷新约整段时间；收紧到单次 15s 超时（放弃双尝试），
+    // 保证一次完整请求 + 用量请求总耗时 < 25s。
+    let resp = client
+        .get(BALANCE_URL)
+        .header("Authorization", format!("Bearer {api_key}"))
+        .timeout(Duration::from_secs(15))
+        .send()
+        .await;
+    match resp {
+        Ok(r) => {
+            let status = r.status();
+            if status.is_success() {
+                let body: Value = r
+                    .json()
+                    .await
+                    .map_err(|e| format!("余额接口返回不是合法 JSON: {e}"))?;
+                let info = body
+                    .get("balance_infos")
+                    .and_then(|v| v.as_array())
+                    .and_then(|a| a.first())
+                    .ok_or("余额接口返回结构异常")?;
+                let total = info
+                    .get("total_balance")
+                    // 官方接口 total_balance 是字符串（"110.00"），as_f64 只认 JSON number
+                    .and_then(|v| v.as_str().and_then(|s| s.parse::<f64>().ok()))
+                    .ok_or("余额接口 total_balance 缺失")?;
+                let currency = info
+                    .get("currency")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("CNY")
+                    .to_string();
+                Ok((total, currency))
+            } else {
+                Err(format!("HTTP {}", status.as_u16()))
             }
-            Err(e) => last_err = Some(e.to_string()),
         }
-        if attempt == 0 {
-            tokio::time::sleep(Duration::from_millis(500)).await;
-        }
+        Err(e) => Err(e.to_string()),
     }
-    Err(last_err.unwrap_or_else(|| "网络错误".to_string()))
 }
 
 /// 令牌实时用量模式：今日费用（元）。
@@ -111,12 +105,16 @@ async fn fetch_today_usage(client: &reqwest::Client, platform_token: &str) -> Re
 
 /// 组装完整 payload（记账/令牌双模式 + 峰谷标记 + 落缓存）。
 pub async fn get_balance_payload(state: &AppState) -> Value {
-    let cfg = config::read(&state.dir);
+    // ponytail: 只取配置快照就释放锁，避免 std MutexGuard 跨 await（async 命令要求 Send）
+    let cfg = {
+        let _g = state.cfg.lock().unwrap_or_else(|e| e.into_inner());
+        config::read(&state.dir)
+    };
     let Some(key) = cfg.api_key.clone() else {
         return json!({
             "ok": false,
             "code": "NO_KEY",
-            "error": "未配置 DEEPSEEK_API_KEY，请在托盘菜单「设置 API Key」"
+            "error": "未配置 API Key，请点鲸鱼菜单「设置 API Key」"
         });
     };
 
@@ -188,6 +186,7 @@ mod tests {
                 payload: json!({"ok": true}),
             })),
             busy: tokio::sync::Mutex::new(()),
+            cfg: std::sync::Mutex::new(()),
         };
         assert!(cached_payload(&state).is_some());
         let expired = AppState {
@@ -198,6 +197,7 @@ mod tests {
                 payload: json!({"ok": true}),
             })),
             busy: tokio::sync::Mutex::new(()),
+            cfg: std::sync::Mutex::new(()),
         };
         assert!(cached_payload(&expired).is_none());
     }

@@ -3,14 +3,16 @@ if (window.__dshWhaleWidget) return
 window.__dshWhaleWidget = true
 
 var MIN_SCALE = 0.6
+// 小窗最小可用大小：固定尺寸的菜单按钮 + 气泡文本在低于 scale 1.0 时会把角色
+// 头部盖住/文本出界，直接限制拖动下限（用户选择方案：不缩小到显示不全）。
+var MIN_SIZE_SCALE = 1.0
 var MAX_SCALE = 2.5
 var STEP = 0.1
-var CLICK_SQ = 9
+var CLICK_SQ = 16
 var REFRESH_MS = 60000
 var CHANGE_MS = 900
 var ANIM_MS = 700
 var BUBBLE_MS = 5000
-var FETCH_TIMEOUT_MS = 25000
 // Tauri IPC bridge: 取代原浏览器版的路由请求（/dsh-whale/*）
 var WHALE = window.__TAURI__ && window.__TAURI__.core ? window.__TAURI__.core : null
 function apiBalance() { return WHALE.invoke('get_balance') }
@@ -18,55 +20,14 @@ function apiGetConfig() { return WHALE.invoke('get_config') }
 function apiSetConfig(cfg) { return WHALE.invoke('set_config', cfg) }
 function apiImageUrl() { return WHALE.invoke('image_data_url') }
 function apiSoundUrl(action, set) { return WHALE.invoke('sound_data_url', { action: action, set: set }) }
+function apiGetWindowBounds() { return WHALE.invoke('get_window_bounds') }
+function apiMoveWindow(x, y) { return WHALE.invoke('move_window', { x: x, y: y }) }
+function apiSetWindowBounds(x, y, width, height) {
+  return WHALE.invoke('set_window_bounds', { x: x, y: y, width: width, height: height })
+}
 var IMG_DATA_URL = null
 var IMG_URL = null
 var SOUND_URLS = { duck: { press: null, release: null }, fx1: { press: null, release: null } }
-var BALANCE_URL = null
-var SIZE_URL = null
-
-var css = [
-  '.dshwv-root{position:fixed;right:0;bottom:0;--dshw-scale:1;--dshw-base:clamp(122px,calc(min(250px,min(100vw,100vh) * 0.28) * var(--dshw-scale)),625px);width:var(--dshw-base);height:var(--dshw-base);pointer-events:none;user-select:none;-webkit-user-select:none;z-index:9999;font-family:inherit;transition:left .16s ease,top .16s ease,transform .3s ease}',
-  '.dshwv-root.dshwv-left{transform:scaleX(-1)}',
-  '.dshwv-root.dshwv-dragging{cursor:grabbing;transition:none}',
-  '.dshwv-body{position:absolute;left:0;top:0;width:100%;height:100%;transform-origin:50% 100%;transition:transform .22s cubic-bezier(.34,1.56,.64,1)}',
-  '.dshwv-img{position:absolute;right:0;bottom:0;width:59.45%;height:59.45%;display:block;pointer-events:none;-webkit-user-drag:none;user-select:none}',
-  '.dshwv-bubble{position:absolute;left:0;top:0;width:100%;aspect-ratio:1026/700;pointer-events:none;z-index:1}',
-  '.dshwv-bubble svg{display:block;width:100%;height:100%;pointer-events:none}',
-  '.dshwv-bubble svg path,.dshwv-bubble svg ellipse{pointer-events:none;cursor:pointer}',
-  '.dshwv-bubble.dshwv-bubble-open svg path,.dshwv-bubble.dshwv-bubble-open svg ellipse{pointer-events:visiblePainted}',
-  '.dshwv-bubble .dshwv-bshape,.dshwv-bubble .dshwv-b1,.dshwv-bubble .dshwv-b2{opacity:0;transform:scale(.7);transform-box:fill-box;transform-origin:50% 50%;transition:opacity .2s ease,transform .2s ease}',
-  '.dshwv-bubble.dshwv-bubble-open .dshwv-bshape,.dshwv-bubble.dshwv-bubble-open .dshwv-b1,.dshwv-bubble.dshwv-bubble-open .dshwv-b2{opacity:1;transform:none}',
-  '.dshwv-bubble.dshwv-bubble-open .dshwv-b2{transition-delay:0s}',
-  '.dshwv-bubble.dshwv-bubble-open .dshwv-b1{transition-delay:.13s}',
-  '.dshwv-bubble.dshwv-bubble-open .dshwv-bshape{transition-delay:.26s}',
-  '.dshwv-bubble .dshwv-bshape{transition-delay:.1s}',
-  '.dshwv-bubble .dshwv-b1{transition-delay:.2s}',
-  '.dshwv-bubble .dshwv-b2{transition-delay:.3s}',
-  '.dshwv-text{position:absolute;left:44.25%;top:38%;transform:translate(-50%,-50%);text-align:center;color:#536ba9;line-height:1.15;white-space:nowrap;--dshw-u:calc(var(--dshw-base) / 1026);pointer-events:none;opacity:0;transition:opacity .16s ease,transform .3s ease}',
-  '.dshwv-bubble.dshwv-bubble-open .dshwv-text{opacity:1;transition:opacity .16s ease .36s,transform .3s ease}',
-  '.dshwv-root.dshwv-left .dshwv-text{transform:translate(-50%,-50%) scaleX(-1)}',
-  '.dshwv-label{font-size:calc(var(--dshw-u) * 66);font-weight:600;letter-spacing:.06em}',
-  '.dshwv-amount{font-size:calc(var(--dshw-u) * 128);font-weight:800;line-height:1.05}',
-  '.dshwv-period{font-size:calc(var(--dshw-u) * 104);font-weight:800;line-height:1.05}',
-  '.dshwv-wrap{white-space:normal;max-width:calc(var(--dshw-u) * 560);line-height:1.2}',
-  '.dshwv-hint{font-size:calc(var(--dshw-u) * 56);color:#9fb0d9;letter-spacing:.02em;margin-top:calc(var(--dshw-u) * 9)}',
-  '.dshwv-menu-btn{position:absolute;top:calc(40.55% + 4px);right:4px;width:26px;height:26px;border:none;border-radius:6px;background:rgba(32,49,112,.85);cursor:pointer;pointer-events:auto;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;padding:0;z-index:2;opacity:0;transition:opacity .15s ease}',
-  '.dshwv-menu-btn.dshwv-menu-btn-visible{opacity:1}',
-  '.dshwv-menu-btn span{display:block;width:14px;height:2px;background:#fff;border-radius:1px}',
-  '.dshwv-menu-btn:hover{background:#203170}',
-  '.dshwv-menu{position:fixed;min-width:172px;background:rgba(255,255,255,.92);border:1px solid rgba(32,49,112,.35);border-radius:10px;padding:10px 12px;opacity:0;transform:scale(.92) translateY(-4px);transform-origin:top right;transition:opacity .18s ease,transform .2s cubic-bezier(.34,1.56,.64,1);pointer-events:none;z-index:10000;box-shadow:0 6px 18px rgba(0,0,0,.18);color-scheme:light}',
-  '.dshwv-menu.dshwv-menu-open{opacity:1;transform:scale(1) translateY(0);pointer-events:auto}',
-  '.dshwv-menu-row{display:flex;align-items:center;gap:8px;margin:5px 0;color:#203170;font-size:12px;white-space:nowrap}',
-  '.dshwv-range{flex:1;min-width:0;accent-color:#203170}',
-  '.dshwv-number{width:46px;border:1px solid rgba(32,49,112,.4);border-radius:6px;padding:2px 4px;font-size:12px;color:#203170;background:#fff}',
-  '.dshwv-sound{flex:1;border:1px solid rgba(32,49,112,.4);border-radius:6px;background:rgba(32,49,112,.08);color:#203170;font-size:12px;padding:3px 0;cursor:pointer}',
-  '.dshwv-sound:hover{background:rgba(32,49,112,.16)}',
-  '.dshwv-volpct{width:36px;text-align:right;color:#203170;font-size:12px}'
-].join('\\n')
-
-var styleEl = document.createElement('style')
-styleEl.textContent = css
-document.head.appendChild(styleEl)
 
 var root = document.createElement('div')
 root.className = 'dshwv-root'
@@ -98,26 +59,43 @@ function menuRow() {
 }
 var scaleInput = document.createElement('input')
 scaleInput.type = 'range'
-scaleInput.min = String(MIN_SCALE)
+scaleInput.min = String(MIN_SIZE_SCALE)
 scaleInput.max = String(MAX_SCALE)
 scaleInput.step = '0.1'
 scaleInput.className = 'dshwv-range'
 scaleInput.value = '1.5'
 var scaleNumber = document.createElement('input')
 scaleNumber.type = 'number'
-scaleNumber.min = '1'
+scaleNumber.min = String(scaleToDisplay(MIN_SIZE_SCALE))
 scaleNumber.max = '20'
 scaleNumber.step = '1'
 scaleNumber.className = 'dshwv-number'
 scaleNumber.value = '10'
-scaleInput.addEventListener('pointerdown', function () { root.style.transition = 'none' })
-scaleInput.addEventListener('input', function () { setScale(scaleInput.value) })
-scaleInput.addEventListener('change', function () { root.style.transition = '' })
+// 鲸鱼实时随滑块大小变化：每个 input 事件都按当前值 resize 鲸鱼+窗口。
+// 但会带着滑块跑 → 按下时把菜单钉死在屏幕位置，并**关掉菜单 left/top 过渡动画**
+// （动画会让滑块在窗口原点变化时滞后漂移，点击轨道按绝对坐标定位就读错值）。
+// 松开（change）后才解除钉住、把菜单重新对齐到鲸鱼头顶上方。
+scaleInput.addEventListener('pointerdown', function () {
+  document.body.classList.add('dshwv-live-scale')
+  if (menuOpen) pinMenuNow()
+})
+scaleInput.addEventListener('input', function () { setScale(scaleInput.value, false) })
+scaleInput.addEventListener('change', function () {
+  document.body.classList.remove('dshwv-live-scale')
+  menuPin = null
+  setScale(scaleInput.value, true)
+})
+scaleInput.addEventListener('pointercancel', function () {
+  document.body.classList.remove('dshwv-live-scale')
+})
+document.addEventListener('pointerup', function () {
+  document.body.classList.remove('dshwv-live-scale')
+})
 scaleNumber.addEventListener('change', function () {
   var v = Math.round(Number(scaleNumber.value))
   var s = MIN_SCALE + Math.max(0, Math.min(20, v) - 1) * (MAX_SCALE - MIN_SCALE) / 19
-  setScale(s)
-  root.style.transition = ''
+  menuPin = null
+  setScale(s, true)
 })
 var soundSelect = document.createElement('select')
 soundSelect.className = 'dshwv-sound'
@@ -133,7 +111,7 @@ soundSelect.addEventListener('change', function () { setSoundSet(soundSelect.val
 var usageSelect = document.createElement('select')
 usageSelect.className = 'dshwv-sound'
 usageSelect.appendChild(soundOpt('ledger', '小鲸鱼记账 (推荐)'))
-usageSelect.appendChild(soundOpt('token', '实时·令牌 (用法：去问dsh)'))
+usageSelect.appendChild(soundOpt('token', '实时·令牌 (设置里自动获取)'))
 usageSelect.addEventListener('change', function () { setUsageMode(usageSelect.value) })
 var row1 = menuRow()
 row1.appendChild(menuLabel('大小'))
@@ -160,10 +138,21 @@ row3.appendChild(volPct)
 var row4 = menuRow()
 row4.appendChild(menuLabel('用量'))
 row4.appendChild(usageSelect)
+var rowSet = menuRow()
+var setBtn = document.createElement('button')
+setBtn.type = 'button'
+setBtn.className = 'dshwv-setbtn'
+setBtn.textContent = '设置 API Key'
+setBtn.addEventListener('click', function () {
+  closeMenu()
+  WHALE.invoke('open_settings').catch(function () {})
+})
+rowSet.appendChild(setBtn)
 menuBox.appendChild(row1)
 menuBox.appendChild(row2)
 menuBox.appendChild(row3)
 menuBox.appendChild(row4)
+menuBox.appendChild(rowSet)
 
 var textBox = document.createElement('div')
 textBox.className = 'dshwv-text'
@@ -209,11 +198,10 @@ root.appendChild(menuBtn)
 document.body.appendChild(root)
 document.body.appendChild(menuBox)
 
-// Position model: the widget is ALWAYS expressed in left/top px (so edge snaps
-// animate smoothly via the CSS transition on both sides — switching to
-// right/auto cannot transition and flashes). The anchor info (h/v + offsets)
-// lives in state and is used by settle() to recompute coordinates on window
-// resize and size changes, keeping the widget glued to its anchored edge.
+// Position model (桌面小窗版): 窗口本身就是鲸鱼小窗，state.left/top 是**窗口在屏幕上的
+// 逻辑坐标**（相对主显示器左上角）。锚定信息（h/v + offsets）仍在 state 中，settle() 用
+// 它在窗口尺寸变化/吸附时重算坐标，保持鲸鱼贴住锚定边缘。widget.js 不再移动 root 的
+// left/top —— 移动窗口交给 move_window/set_window_bounds IPC。
 var state = {
   scale: 1.5,
   h: 'right',
@@ -363,11 +351,20 @@ function hideBubble() {
 }
 
 function clamp(v, lo, hi) { return v < lo ? lo : (v > hi ? hi : v) }
+// 窗口里外层视口：小窗模式下 == 鲸鱼 root 尺寸（base）。
 function viewport() {
   return {
     w: window.innerWidth || document.documentElement.clientWidth || 1280,
     h: window.innerHeight || document.documentElement.clientHeight || 800
   }
+}
+// 主显示器逻辑尺寸缓存（吸附/越界 clamp 用），boot 时填充。
+var SCREEN = { w: 1280, h: 720 }
+function loadScreen() {
+  return WHALE.invoke('screen_size').then(function (s) {
+    SCREEN.w = s && s.width ? Number(s.width) : SCREEN.w
+    SCREEN.h = s && s.height ? Number(s.height) : SCREEN.h
+  }).catch(function () {})
 }
 function fmt(balance, currency) {
   var num = Number(balance)
@@ -418,37 +415,75 @@ function render() {
     setHint(hint)
   }
 }
+// 小窗模型：state.left/top 是窗口在屏幕上的逻辑坐标；express 移动真实窗口。
+var winMove = null
+var winSize = { w: 0, h: 0 }
+// 鲸鱼在屏幕上方区间内悬顶（.dshwv-top）。判定只用"已贴边吸附"态（state.v === 'top'），
+// 而**不用实时中心位置**——否则缩放大小时鲸鱼中心溜过 SCREEN.h/4 阈值会来回切换
+// 顶部/底部锚点，动画在两个锚点间跳跃、边缘处闪烁。
+function topHang() {
+  return state.v === 'top'
+}
+// 鲸鱼在主显示器的上下两沿都允许贴边：在屏幕上方区间内，角色头像改为悬挂在
+// 窗口顶部（.dshwv-top），这样鲸鱼能真正贴合屏幕上方，而不是悬在方块窗的下半。
+function syncHang() {
+  root.classList.toggle('dshwv-top', topHang())
+}
 function express() {
-  root.style.right = 'auto'
-  root.style.bottom = 'auto'
-  root.style.left = state.left + 'px'
-  root.style.top = state.top + 'px'
+  try {
+    apiMoveWindow(Math.round(state.left), Math.round(state.top))
+  } catch (err) {}
   root.classList.toggle('dshwv-left', state.h === 'left')
+  syncHang()
+}
+var lastWin = null
+function setWinBounds(x, y, w, h) {
+  x = Math.max(0, Math.round(x)); y = Math.max(0, Math.round(y))
+  w = Math.round(w); h = Math.round(h)
+  if (!w || !h) return
+  if (lastWin && lastWin.x === x && lastWin.y === y && lastWin.w === w && lastWin.h === h) return
+  lastWin = { x: x, y: y, w: w, h: h }
+  try { apiSetWindowBounds(x, y, w, h) } catch (err) {}
+}
+// 只更新窗口模型 + root 尺寸（不同步原生窗口），setScale 收紧多次 resize 为一次。
+function layoutBase(nb, keepCorner) {
+  var cx = state.h === 'right' ? state.left + winSize.w : state.left
+  var hang = topHang()
+  var cy = hang ? state.top : state.top + winSize.h
+  var nx = state.h === 'right' ? cx - nb : cx
+  var ny = hang ? cy : cy - nb
+  state.left = clamp(nx, 0, Math.max(0, SCREEN.w - nb))
+  state.top = clamp(ny, 0, Math.max(0, SCREEN.h - nb))
+  winSize.w = nb
+  winSize.h = nb
+  root.style.setProperty('--dshw-base', nb + 'px')
+}
+function setWindowSize(w, h, keepCorner) {
+  layoutBase(w, keepCorner)
+  setWinBounds(state.left, state.top, w, h)
+  syncHang()
 }
 function settle() {
-  var vp = viewport()
-  var w = root.offsetWidth || root.getBoundingClientRect().width || 0
-  var h = root.offsetHeight || root.getBoundingClientRect().height || 0
+  var w = winSize.w || viewport().w
+  var h = winSize.h || viewport().h
   if (drag && drag.active) {
-    // mid-drag resize: keep the pointer-follow position, just clamp into view
-    state.left = clamp(state.left, 0, Math.max(0, vp.w - w))
-    state.top = clamp(state.top, 0, Math.max(0, vp.h - h))
+    // mid-drag: already clamped by drag handler
     express()
     return
   }
   if (state.h === 'right') {
-    state.left = Math.max(0, vp.w - w - state.hOff)
+    state.left = Math.max(0, SCREEN.w - w - state.hOff)
   } else if (state.h === 'left') {
     state.left = state.hOff
   } else {
-    state.left = clamp(state.left, 0, Math.max(0, vp.w - w))
+    state.left = clamp(state.left, 0, Math.max(0, SCREEN.w - w))
   }
   if (state.v === 'bottom') {
-    state.top = Math.max(0, vp.h - h - state.vOff)
+    state.top = Math.max(0, SCREEN.h - h - state.vOff)
   } else if (state.v === 'top') {
     state.top = state.vOff
   } else {
-    state.top = clamp(state.top, 0, Math.max(0, vp.h - h))
+    state.top = clamp(state.top, 0, Math.max(0, SCREEN.h - h))
   }
   express()
 }
@@ -457,12 +492,7 @@ function refresh(manual) {
   busy = true
   if (animDelayTimer) { clearTimeout(animDelayTimer); animDelayTimer = null }
   if (manual || state.balance === null) { state.status = 'loading'; render() }
-  var ctrl = null
-  var timer = null
-  try {
-    ctrl = new AbortController()
-    timer = setTimeout(function () { try { ctrl.abort() } catch (err) {} }, FETCH_TIMEOUT_MS)
-  } catch (err) {}
+  // Rust 侧单次 15s 超时已保证返回；这里不再用 AbortController（invoke 不接 signal）
   apiBalance()
     .then(function (data) {
       if (data && data.ok) {
@@ -513,7 +543,6 @@ function refresh(manual) {
     })
     .finally(function () {
       busy = false
-      if (timer) clearTimeout(timer)
     })
 }
 var soundOn = true
@@ -534,31 +563,46 @@ function setUsageMode(v) {
 function scaleToDisplay(s) {
   return Math.round((s - MIN_SCALE) / ((MAX_SCALE - MIN_SCALE) / 19)) + 1
 }
-function setScale(v) {
-  var next = Math.round(Math.min(MAX_SCALE, Math.max(MIN_SCALE, Number(v))) * 10) / 10
-  var rect = root.getBoundingClientRect()
-  // fixed point: the whale's corner — bottom-right when unflipped, bottom-left
-  // when flipped. Growing extends the widget up-left / up-right from that
-  // corner; shrinking pulls it back toward the corner. The whale always hugs
-  // its corner while scaling.
-  var fx = state.h === 'left' ? rect.left : rect.right
-  var fy = rect.bottom
+// 鲸鱼变大变小过渡：root 先按「旧/新」比例 scale 到旧的大小，再让 CSS transition
+// 滑到最终值。整个鲸鱼围绕「固定角」（贴边时角点不动）缩放，因此无论窗口怎么切
+// 都不会出界/闪烁。镜像态（h=left) 的 scaleX(-1) 与组合 transform 容易打架，跳过。
+function glideWhale(fromScale) {
+  if (state.h === 'left') return
+  var nb = whaleBase(state.scale)
+  var fb = whaleBase(fromScale)
+  var ratio = fb / nb
+  var org = (state.h === 'right' ? 'right' : 'left') + ' ' + (topHang() ? 'top' : 'bottom')
+  root.style.transition = 'none'
+  root.style.transformOrigin = org
+  root.style.transform = 'scale(' + ratio + ')'
+  void root.offsetWidth
+  root.style.transition = ''
+  root.style.transform = ''
+  root.style.transformOrigin = ''
+}
+function setScale(v, animated) {
+  var next = Math.round(Math.min(MAX_SCALE, Math.max(MIN_SIZE_SCALE, Number(v))) * 10) / 10
+  if (!isFinite(next)) next = state.scale
+  var from = state.scale
   state.scale = next
   root.style.setProperty('--dshw-scale', String(next))
   scaleInput.value = String(next)
   scaleNumber.value = String(scaleToDisplay(next))
   saveConfig()
-  // keep the corner fixed while resizing; the position correction applies
-  // instantly because the caller disables the transition for the whole drag
-  var r2 = root.getBoundingClientRect()
-  var vp = viewport()
-  if (state.h === 'left') {
-    state.left = Math.min(Math.max(fx, 0), Math.max(0, vp.w - r2.width))
+  var nb = whaleBase(next)
+  layoutBase(nb, true)
+  // 菜单开着时窗口是临时撑大的：只按并集 resize 一次（不要先缩回 base 再撑大，会闪）
+  if (menuOpen) {
+    growWindowForMenu()
   } else {
-    state.left = Math.min(Math.max(fx - r2.width, 0), Math.max(0, vp.w - r2.width))
+    setWinBounds(state.left, state.top, nb, nb)
+    syncHang()
   }
-  state.top = Math.min(Math.max(fy - r2.height, 0), Math.max(0, vp.h - r2.height))
-  express()
+  if (animated && from !== next) glideWhale(from, next)
+}
+function whaleBase(scale) {
+  var min = Math.min(SCREEN.w, SCREEN.h)
+  return Math.round(Math.min(Math.max(110, min * 0.17 * scale), min * 0.45))
 }
 function setVol(v) {
   var next = Math.round(Math.min(1, Math.max(0, Number(v))) * 100) / 100
@@ -660,46 +704,125 @@ function pressUp() {
 var menuOpen = false
 function toggleMenu() {
   menuOpen = !menuOpen
-  if (menuOpen) positionMenu()
+  if (menuOpen) {
+    growWindowForMenu()
+  } else {
+    shrinkWindowAfterMenu()
+  }
   menuBox.classList.toggle('dshwv-menu-open', menuOpen)
   if (menuOpen) menuBtn.classList.add('dshwv-menu-btn-visible')
 }
+// 菜单弹出的方案：窗口临时扩大到「鲸鱼 base 框 ∪ 菜单框」的并集（菜单比小窗宽/高
+// 都常见），root 用 left/bottom 偏移抵消窗口扩张，鲸鱼在屏幕上纹丝不动；
+// 菜单本身跟随鲸鱼按钮定位，因此不受窗口大小限制（不会被裁切）。
+var menuGrow = null
+// 拖滑块不钉住菜单会把滑块带着跑，但它只在「实时 resize」期间有意义。松开后才
+// 重新按鲸鱼头顶对齐。pin = 菜单此刻的屏幕位置（窗口原点 + 窗口内坐标）。
+var menuPin = null
+function pinMenuNow() {
+  try {
+    var r = menuBox.getBoundingClientRect()
+    menuPin = {
+      l: state.left - (menuGrow ? menuGrow.left : 0) + r.left,
+      t: state.top - (menuGrow ? menuGrow.top : 0) + r.top,
+      w: r.width,
+      h: r.height
+    }
+  } catch (err) {}
+}
+// 菜单屏幕方框：钉住时用钉住的屏幕位置，否则由 menuRect（头顶上方）换算成屏幕坐标。
+function menuBoxScreen() {
+  if (menuPin) return menuPin
+  var mr = menuRect()
+  return { l: state.left + mr.left, t: state.top + mr.top, w: mr.w, h: mr.h }
+}
+// 菜单始终显示在鲸鱼头顶正上方（水平方向对齐角色画面中心，左右都不可出屏），
+// 顶部放不下时翻到鲸鱼下方。菜单宽度比小窗更宽，由 growWindowForMenu 并集兜住。
+function menuRect() {
+  var baseW = winSize.w || whaleBase(state.scale)
+  var artW = baseW * 0.5945
+  var hang = topHang()
+  var artRelTop = hang ? 0 : baseW - artW
+  var artRelBottom = hang ? artW : baseW
+  // 镜像态（h=left）角色靠左，水平中心 = artW/2；右对齐时 = baseW - artW/2。
+  var artRelCx = state.h === 'left' ? artW / 2 : baseW - artW / 2
+  var mw = menuBox.offsetWidth || 254
+  var mh = menuBox.offsetHeight || 190
+  var left = clamp(state.left + artRelCx - mw / 2, 0, Math.max(0, SCREEN.w - mw)) - state.left
+  var top = artRelTop - mh
+  if (state.top + top < 0) top = artRelBottom
+  return { left: left, top: top, w: mw, h: mh }
+}
+function growWindowForMenu() {
+  try {
+    if (!menuOpen) return
+    var mb = menuBoxScreen()
+    var baseL = state.left, baseT = state.top
+    var baseW = winSize.w || whaleBase(state.scale), baseH = winSize.h || baseW
+    var winLeft = Math.max(0, Math.min(baseL, mb.l))
+    var winTop = Math.max(0, Math.min(baseT, mb.t))
+    var winRight = Math.min(SCREEN.w, Math.max(baseL + baseW, mb.l + mb.w))
+    var winBottom = Math.min(SCREEN.h, Math.max(baseT + baseH, mb.t + mb.h))
+    menuGrow = {
+      left: baseL - winLeft,
+      top: baseT - winTop,
+      bottom: winBottom - (baseT + baseH)
+    }
+    // root 偏移：窗口扩张了多少，root 就反向挪多少，鲸鱼在屏幕上不动
+    root.style.left = menuGrow.left + 'px'
+    root.style.bottom = menuGrow.bottom + 'px'
+    setWinBounds(winLeft, winTop, winRight - winLeft, winBottom - winTop)
+    setWidgetCursor('')
+    syncHang()
+    positionMenu()
+  } catch (err) {}
+}
+function shrinkWindowAfterMenu() {
+  if (!menuGrow) return
+  setWinBounds(state.left, state.top, winSize.w, winSize.h)
+  root.style.left = ''
+  root.style.bottom = ''
+  menuGrow = null
+  menuPin = null
+}
 function closeMenu() {
-  menuOpen = false
-  menuBox.classList.remove('dshwv-menu-open')
-  root.style.transition = ''
+  if (menuOpen) {
+    menuOpen = false
+    shrinkWindowAfterMenu()
+    menuBox.classList.remove('dshwv-menu-open')
+  }
   snapCheck()
 }
 function snapCheck() {
-  var rect = root.getBoundingClientRect()
-  var vp = viewport()
-  var w = rect.width, h = rect.height
-  var left = rect.left, top = rect.top
+  // 小窗模型：用窗口在屏幕上的坐标判断贴边/贴角
+  var w = winSize.w || viewport().w
+  var h = winSize.h || viewport().h
+  var left = state.left, top = state.top
   var centerX = left + w / 2
   var centerY = top + h / 2
   var moved = false
-  if (centerX < vp.w / 4) {
+  if (centerX < SCREEN.w / 4) {
     state.h = 'left'
     state.hOff = 0
     left = 0
     moved = true
-  } else if (centerX > vp.w * 3 / 4) {
+  } else if (centerX > SCREEN.w * 3 / 4) {
     state.h = 'right'
     state.hOff = 0
-    left = vp.w - w
+    left = SCREEN.w - w
     moved = true
   } else {
     state.h = null
     state.hOff = left
   }
-  if (centerY < vp.h / 4) {
+  if (centerY < SCREEN.h / 4) {
     state.v = 'top'
     state.vOff = 0
     top = 0
     moved = true
   } else {
     state.v = 'bottom'
-    state.vOff = Math.max(0, vp.h - top - h)
+    state.vOff = Math.max(0, SCREEN.h - top - h)
   }
   if (moved) {
     state.left = left
@@ -709,24 +832,14 @@ function snapCheck() {
 }
 function positionMenu() {
   try {
-    var r = root.getBoundingClientRect()
-    var b = menuBtn.getBoundingClientRect()
-    var vp = viewport()
-    var onLeft = r.left + r.width / 2 < vp.w / 2
-    // the menu appears ABOVE the button, anchored to its side:
-    // right side → menu bottom-right aligns with the button's top-right;
-    // left side → menu bottom-left aligns with the button's top-left
-    if (onLeft) {
-      menuBox.style.left = b.left + 'px'
-      menuBox.style.right = 'auto'
-      menuBox.style.transformOrigin = 'bottom left'
-    } else {
-      menuBox.style.right = (vp.w - b.right) + 'px'
-      menuBox.style.left = 'auto'
-      menuBox.style.transformOrigin = 'bottom right'
-    }
-    menuBox.style.bottom = (vp.h - b.top) + 'px'
-    menuBox.style.top = 'auto'
+    if (!menuOpen || !menuGrow) return
+    var mb = menuBoxScreen()
+    // 菜单 position:fixed 相对窗口：屏幕坐标 - 窗口原点 = 窗口内坐标
+    menuBox.style.left = (mb.l - (state.left - menuGrow.left)) + 'px'
+    menuBox.style.top = (mb.t - (state.top - menuGrow.top)) + 'px'
+    menuBox.style.right = 'auto'
+    menuBox.style.bottom = 'auto'
+    menuBox.style.transformOrigin = 'bottom center'
   } catch (err) {}
 }
 
@@ -749,7 +862,7 @@ function setupHitTest() {
   } catch (err) {}
 }
 function isWhaleHit(e) {
-  if (!hitCanvas || !hitReady) return true
+  if (!hitCanvas || !hitReady) return false
   try {
     var r = img.getBoundingClientRect()
     if (!r || r.width <= 0 || r.height <= 0) return false
@@ -760,15 +873,8 @@ function isWhaleHit(e) {
     var data = hitCanvas.getContext('2d').getImageData(Math.floor(lx), Math.floor(ly), 1, 1).data
     return data[3] > 10
   } catch (err) {
-    return true
+    return false
   }
-}
-var inputEnabled = false
-function setInputEnabled(en) {
-  if (en === inputEnabled) return
-  inputEnabled = en
-  if (!en && menuOpen) closeMenu()
-  try { WHALE.invoke('set_input_enabled', { enabled: en }) } catch (err) {}
 }
 function onDocPointerDown(e) {
   if (e.target && e.target.closest) {
@@ -781,9 +887,17 @@ function onDocPointerDown(e) {
   if (e.button !== 0 && e.pointerType === 'mouse') return
   if (!isWhaleHit(e)) return
   try { e.preventDefault(); e.stopPropagation() } catch (err) {}
-  var vp = viewport()
-  var rect = root.getBoundingClientRect()
-  drag = { active: true, startX: e.clientX, startY: e.clientY, origLeft: rect.left, origTop: rect.top, w: rect.width, h: rect.height, moved: false, vp: vp }
+  // 拖拽移动整个鲸鱼窗口：起点记屏幕坐标（移窗后 clientX 不可靠）
+  drag = {
+    active: true,
+    startScreenX: e.screenX,
+    startScreenY: e.screenY,
+    origLeft: state.left,
+    origTop: state.top,
+    w: winSize.w || viewport().w,
+    h: winSize.h || viewport().h,
+    moved: false
+  }
   root.classList.add('dshwv-dragging')
   pressDown()
   setWidgetCursor('grabbing')
@@ -794,14 +908,14 @@ function onDocPointerDown(e) {
 }
 function onDocPointerMove(e) {
   if (!drag || !drag.active) return
-  var dx = e.clientX - drag.startX
-  var dy = e.clientY - drag.startY
+  var dx = e.screenX - drag.startScreenX
+  var dy = e.screenY - drag.startScreenY
   if (dx * dx + dy * dy >= CLICK_SQ) drag.moved = true
   // Keep the pre-drag flip orientation while dragging (state.h/v stay as they
   // were); on release endDrag() recomputes the anchors and settle() flips the
   // class with a smooth transition instead of reverting instantly.
-  state.left = clamp(drag.origLeft + dx, 0, Math.max(0, drag.vp.w - drag.w))
-  state.top = clamp(drag.origTop + dy, 0, Math.max(0, drag.vp.h - drag.h))
+  state.left = clamp(drag.origLeft + dx, 0, Math.max(0, SCREEN.w - drag.w))
+  state.top = clamp(drag.origTop + dy, 0, Math.max(0, SCREEN.h - drag.h))
   express()
 }
 function onDocPointerUp(e) { endDrag(e, true) }
@@ -825,13 +939,11 @@ function onDocPointerMoveCursor(e) {
   if (el && el.closest && (el.closest('.dshwv-bubble') || el.closest('.dshwv-menu') || el.closest('.dshwv-menu-btn'))) {
     setWidgetCursor('')
     menuBtn.classList.add('dshwv-menu-btn-visible')
-    setInputEnabled(true)
     return
   }
   var over = isWhaleHit(e)
   setWidgetCursor(over ? 'grab' : '')
   menuBtn.classList.toggle('dshwv-menu-btn-visible', over || menuOpen)
-  setInputEnabled(over || menuOpen)
 }
 document.addEventListener('pointermove', onDocPointerMoveCursor, true)
 
@@ -846,26 +958,26 @@ function endDrag(e, clickAllowed) {
   root.classList.remove('dshwv-dragging')
   setWidgetCursor(isWhaleHit(e) ? 'grab' : '')
   if (clickAllowed && !drag.moved) { showBubble(); refresh(true); return }
-  var dx = e.clientX - drag.startX
-  var dy = e.clientY - drag.startY
-  var left = clamp(drag.origLeft + dx, 0, Math.max(0, drag.vp.w - drag.w))
-  var top = clamp(drag.origTop + dy, 0, Math.max(0, drag.vp.h - drag.h))
+  var dx = e.screenX - drag.startScreenX
+  var dy = e.screenY - drag.startScreenY
+  var left = clamp(drag.origLeft + dx, 0, Math.max(0, SCREEN.w - drag.w))
+  var top = clamp(drag.origTop + dy, 0, Math.max(0, SCREEN.h - drag.h))
   var centerX = left + drag.w / 2
   var centerY = top + drag.h / 2
-  if (centerX < drag.vp.w / 4) {
+  if (centerX < SCREEN.w / 4) {
     state.h = 'left'
     state.hOff = 0
-  } else if (centerX > drag.vp.w * 3 / 4) {
+  } else if (centerX > SCREEN.w * 3 / 4) {
     state.h = 'right'
     state.hOff = 0
   } else {
     state.h = null
     state.hOff = left
   }
-  if (centerY < drag.vp.h / 4) {
+  if (centerY < SCREEN.h / 4) {
     state.v = 'top'
     state.vOff = 0
-  } else if (centerY > drag.vp.h * 3 / 4) {
+  } else if (centerY > SCREEN.h * 3 / 4) {
     state.v = 'bottom'
     state.vOff = 0
   } else {
@@ -877,21 +989,31 @@ function endDrag(e, clickAllowed) {
   settle()
 }
 window.addEventListener('resize', function () {
-  settle()
+  // 菜单开着时窗口是临时撑大的：winSize 保存的是鲸鱼 base 尺寸，
+  // 不能拿 innerHeight（含菜单撑高）覆盖它；只要按新几何重排窗口+菜单即可。
+  if (!menuOpen && winSize.w) {
+    winSize.w = window.innerWidth
+    winSize.h = window.innerHeight
+  }
+  root.style.setProperty('--dshw-base', ((!menuOpen && window.innerWidth) || winSize.w) + 'px')
+  if (menuOpen) {
+    growWindowForMenu()
+  } else {
+    settle()
+  }
 })
 
-var rect0 = root.getBoundingClientRect()
-state.left = rect0.left
-state.top = rect0.top
-express()
-render()
 function applyConfig(d) {
-  if (d && typeof d.scale === 'number' && d.scale >= MIN_SCALE - 0.1 && d.scale <= MAX_SCALE + 0.1) {
-    state.scale = d.scale
-    root.style.setProperty('--dshw-scale', String(d.scale))
-    scaleInput.value = String(d.scale)
-    scaleNumber.value = String(scaleToDisplay(d.scale))
-    settle()
+  if (d && typeof d.scale === 'number') {
+    // 旧配置/越界值：一律钳到 [MIN_SIZE_SCALE, MAX_SCALE]，避免窗口与 UI 不一致
+    var s = Math.round(Math.min(MAX_SCALE, Math.max(MIN_SIZE_SCALE, Number(d.scale))) * 10) / 10
+    // 小窗模型：scale 决定窗口尺寸（base），窗口位置读自真实窗口
+    state.scale = s
+    root.style.setProperty('--dshw-scale', String(s))
+    scaleInput.value = String(s)
+    scaleNumber.value = String(scaleToDisplay(s))
+    var b = whaleBase(s)
+    setWindowSize(b, b, true)
   }
   if (d && typeof d.vol === 'number') {
     soundVol = d.vol
@@ -916,7 +1038,37 @@ function applyConfig(d) {
 }
 function bootWidget() {
   setupHitTest()
-  apiGetConfig().then(applyConfig).catch(function () { refresh(false) })
+  // 托盘「刷新余额」/ 设置窗保存凭据后触发响应刷新（H2/L8）
+  try {
+    var evt = window.__TAURI__ && window.__TAURI__.event
+    if (evt && typeof evt.listen === 'function') {
+      evt.listen('refresh-balance', function () { refresh(true) })
+    }
+  } catch (err) {}
+  // 记下窗口当前逻辑坐标/尺寸（boot 时 Rust 已按配置 scale 摆好），
+  // 尺寸不再从这里写 --dshw-base —— 统一由 applyConfig→setWindowSize 按 scale 重算，
+  // 避免物理/逻辑像素混淆导致鲸鱼被裁剪。
+  loadScreen()
+    .then(function () {
+      return WHALE.invoke('get_window_bounds')
+    })
+    .then(function (b) {
+      if (b && isFinite(Number(b.x))) state.left = Number(b.x)
+      if (b && isFinite(Number(b.y))) state.top = Number(b.y)
+      if (b && isFinite(Number(b.width)) && Number(b.width) > 0) {
+        winSize.w = Number(b.width)
+        winSize.h = Number(b.height)
+      }
+      return apiGetConfig()
+    })
+    .then(applyConfig)
+    .catch(function () {
+      // 配置读取失败：按默认 scale 摆好窗口，别让鲸鱼悬空不显示
+      state.scale = 1.5
+      setWindowSize(whaleBase(1.5), whaleBase(1.5), true)
+      refresh(false)
+      settle()
+    })
 }
 function loadAssets() {
   apiImageUrl()

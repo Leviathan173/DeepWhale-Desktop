@@ -44,8 +44,13 @@ fn read(dir: &Path, today: &str) -> Ledger {
 }
 
 fn write(dir: &Path, led: &Ledger) {
-    if let Ok(s) = serde_json::to_string_pretty(led) {
-        let _ = fs::write(file_path(dir), s);
+    match serde_json::to_string_pretty(led) {
+        Ok(s) => {
+            if let Err(e) = fs::write(file_path(dir), s) {
+                eprintln!("ledger write failed: {e}");
+            }
+        }
+        Err(e) => eprintln!("ledger serialize failed: {e}"),
     }
 }
 

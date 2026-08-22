@@ -23,8 +23,8 @@
       color: #203170;
       background: #fff;
     }
-    .hint { font-size: 12px; color: #9fb0d9; margin: 4px 0 14px; line-height: 1.5; }
-    .row { display: flex; align-items: center; gap: 10px; margin-top: 16px; }
+    .hint { font-size: 12px; color: #9fb0d9; margin: 4px 0 10px; line-height: 1.5; }
+    .row { display: flex; align-items: center; gap: 10px; margin-top: 14px; }
     button {
       padding: 8px 22px;
       border: none;
@@ -35,7 +35,17 @@
       cursor: pointer;
     }
     button:hover { background: #2c4190; }
+    button:disabled { opacity: .55; cursor: default; }
+    button.ghost {
+      background: #fff;
+      color: #203170;
+      border: 1px solid rgba(32,49,112,.4);
+      padding: 5px 12px;
+      font-size: 12px;
+    }
+    button.ghost:hover { background: #eef1fa; }
     #status { font-size: 13px; color: #2fa24c; }
+    #tokstatus { font-size: 12px; color: #2fa24c; line-height: 1.5; }
   </style>
 </head>
 <body>
@@ -47,7 +57,16 @@
 
   <label for="platform-token">DEEPSEEK_PLATFORM_TOKEN（令牌实时用量，可选）</label>
   <input id="platform-token" type="password" placeholder="可选" autocomplete="off" />
-  <div class="hint">平台会话令牌（浏览器 DevTools 用量请求的 Authorization 头）。<br>留空则使用「小鲸鱼记账」模式。</div>
+  <div class="hint">
+    平台会话令牌。点击下方按钮，在打开的独立浏览器里登录
+    <b>platform.deepseek.com/usage</b>，自动抓取并保存，无需手动复制。<br>
+    若自动获取失败，可手动 DevTools 查看用量请求的 Authorization 头填此框。<br>
+    留空则使用「小鲸鱼记账（估算）」模式。
+  </div>
+  <div class="row">
+    <button id="autotoken" class="ghost">自动获取令牌</button>
+    <span id="tokstatus"></span>
+  </div>
 
   <div class="row">
     <button id="save">保存</button>

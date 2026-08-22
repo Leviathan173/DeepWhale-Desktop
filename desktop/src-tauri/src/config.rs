@@ -63,8 +63,13 @@ pub fn read(dir: &Path) -> AppConfig {
 }
 
 fn write_file(dir: &Path, cfg: &AppConfig) {
-    if let Ok(s) = serde_json::to_string_pretty(cfg) {
-        let _ = fs::write(file(dir), s);
+    match serde_json::to_string_pretty(cfg) {
+        Ok(s) => {
+            if let Err(e) = fs::write(file(dir), s) {
+                eprintln!("config write failed: {e}");
+            }
+        }
+        Err(e) => eprintln!("config serialize failed: {e}"),
     }
 }
 
