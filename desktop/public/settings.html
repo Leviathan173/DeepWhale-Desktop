@@ -165,6 +165,31 @@
         </div>
       </section>
 
+      <section id="sec-notify">
+        <h1>余额 / 花费通知</h1>
+        <div class="hint">
+          小鲸鱼每 60 秒自动刷新一次，当一个条件被触发时，在鲸鱼旁边弹出提示泡泡。
+          每个条件<b>每个小时最多提醒一次</b>；留空表示关闭该项通知。<br>
+          本小时花费为本地估算值（按每次刷新观测到的余额/剩余变化累计），
+          <b>本轮重启鲸鱼后按当前值重新起算</b>。
+        </div>
+
+        <label for="ds-hourly-limit">DeepSeek：本小时花费超过（元）</label>
+        <input id="ds-hourly-limit" type="number" min="0" step="0.5" placeholder="如 20" />
+        <label for="ds-min-balance">DeepSeek：余额低于（元）</label>
+        <input id="ds-min-balance" type="number" min="0" step="0.5" placeholder="如 10" />
+
+        <label for="bl-hourly-pct">百炼：本小时花费超过（%）</label>
+        <input id="bl-hourly-pct" type="number" min="0" max="100" step="0.1" placeholder="如 5" />
+        <label for="bl-remaining-pct">百炼：周剩余额度低于（%）</label>
+        <input id="bl-remaining-pct" type="number" min="0" max="100" step="1" placeholder="如 20" />
+
+        <div class="row">
+          <button id="savenotify">保存通知设置</button>
+          <span id="notifystatus"></span>
+        </div>
+      </section>
+
       <hr>
 
       <section id="sec-pricing">

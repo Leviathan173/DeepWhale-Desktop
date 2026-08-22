@@ -60,7 +60,8 @@ fn main() {
             get_window_bounds,
             screen_size,
             move_window,
-            set_window_bounds
+            set_window_bounds,
+            set_notify_prefs
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
@@ -193,6 +194,10 @@ fn get_config(app: tauri::AppHandle) -> Value {
         "hasApiKey": cfg.api_key.is_some(),
         "provider": cfg.provider,
         "hasBailian": cfg.bailian_cookie.is_some() && cfg.bailian_post_data.is_some(),
+        "dsHourlyLimit": cfg.ds_hourly_limit,
+        "dsMinBalance": cfg.ds_min_balance,
+        "blHourlyPct": cfg.bl_hourly_pct,
+        "blRemainingPct": cfg.bl_remaining_pct,
     })
 }
 
@@ -223,6 +228,27 @@ fn set_config(app: tauri::AppHandle, payload: Value) -> Result<Value, String> {
     config::write_prefs(dir, scale, sound, vol, sound_set, usage_mode, opencode_db);
     config::write_provider(dir, provider);
     Ok(json!({ "ok": true }))
+}
+
+/// 设置通知阈值（None/≤0 → 关闭该项通知）。
+#[tauri::command]
+fn set_notify_prefs(
+    app: tauri::AppHandle,
+    ds_hourly_limit: Option<f64>,
+    ds_min_balance: Option<f64>,
+    bl_hourly_pct: Option<f64>,
+    bl_remaining_pct: Option<f64>,
+) -> Value {
+    let st = app.state::<AppState>();
+    let _g = st.cfg.lock().unwrap_or_else(|e| e.into_inner());
+    config::write_notify_prefs(
+        &st.dir,
+        ds_hourly_limit,
+        ds_min_balance,
+        bl_hourly_pct,
+        bl_remaining_pct,
+    );
+    json!({ "ok": true })
 }
 
 #[tauri::command]

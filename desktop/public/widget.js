@@ -396,6 +396,85 @@ function hideBubble() {
   bubbleBox.classList.remove('dshwv-bubble-open')
 }
 
+// ---- 余额/花费通知：阈值 + 本小时累计 + 每个条件每小时最多一次 ----
+// 阈值来自配置（get_config）；deepseek 按金额(元)，百炼按百分比。
+var notifyCfg = { dsHourlyLimit: null, dsMinBalance: null, blHourlyPct: null, blRemainingPct: null }
+function numThreshold(v) { return (typeof v === 'number') && isFinite(v) && v > 0 ? v : null }
+function applyNotifyCfg(d) {
+  if (!d) return
+  notifyCfg.dsHourlyLimit = numThreshold(d.dsHourlyLimit)
+  notifyCfg.dsMinBalance = numThreshold(d.dsMinBalance)
+  notifyCfg.blHourlyPct = numThreshold(d.blHourlyPct)
+  notifyCfg.blRemainingPct = numThreshold(d.blRemainingPct)
+}
+// 本小时起点与 Δ 累计：跨小时归零重算（重启后从当前值起算）
+var hourState = { hour: -1, prevDs: null, dsSpend: 0, prevBl: null, blSpend: 0 }
+var lastNotif = { dsLow: -1, dsHourly: -1, blLow: -1, blHourly: -1 }
+function fmtV(v) { return String(Number(v)) }
+// 计算/判定通知条件；命中返回气泡行，未命中返回 false。
+function checkNotifs(data) {
+  var hour = Math.floor(Date.now() / 3600000)
+  var bal = Number(data.totalBalance)
+  var currency = String(data.currency || 'CNY')
+  var bl = data && data.bailian
+  var blRemain = (bl && bl.ok) ? parseFloat(String(bl.remaining)) : NaN
+  // 小时累计
+  if (hourState.hour !== hour) {
+    hourState.hour = hour
+    hourState.dsSpend = 0
+    hourState.blSpend = 0
+    hourState.prevDs = bal
+    hourState.prevBl = blRemain
+  } else {
+    if (isFinite(hourState.prevDs)) {
+      var d = hourState.prevDs - bal
+      if (d > 0) hourState.dsSpend += d
+    }
+    hourState.prevDs = bal
+    if (isFinite(hourState.prevBl) && isFinite(blRemain)) {
+      var b = hourState.prevBl - blRemain
+      if (b > 0) hourState.blSpend += b
+    }
+    hourState.prevBl = blRemain
+  }
+  function did(key) {
+    if (lastNotif[key] === hour) return false
+    lastNotif[key] = hour
+    return true
+  }
+  if (notifyCfg.dsMinBalance != null && isFinite(bal) && bal < notifyCfg.dsMinBalance && did('dsLow')) {
+    return [{ t: 'DeepSeek 余额不足', s: 'A', c: '#e0433f' },
+            { t: fmt(bal, currency), s: 'B', c: '' },
+            { t: '低于 ¥' + fmtV(notifyCfg.dsMinBalance), s: 'C', c: '' }]
+  }
+  if (notifyCfg.dsHourlyLimit != null && hourState.dsSpend >= notifyCfg.dsHourlyLimit && did('dsHourly')) {
+    return [{ t: 'DeepSeek 本小时已花费', s: 'A', c: '#e0433f' },
+            { t: fmt(hourState.dsSpend, currency), s: 'B', c: '' },
+            { t: '超过 ¥' + fmtV(notifyCfg.dsHourlyLimit), s: 'C', c: '' }]
+  }
+  if (notifyCfg.blRemainingPct != null && isFinite(blRemain) && blRemain < notifyCfg.blRemainingPct && did('blLow')) {
+    return [{ t: '百炼 剩余额度不足', s: 'A', c: '#e0433f' },
+            { t: blRemain.toFixed(1) + '%', s: 'B', c: '' },
+            { t: '低于 ' + fmtV(notifyCfg.blRemainingPct) + '%', s: 'C', c: '' }]
+  }
+  if (notifyCfg.blHourlyPct != null && hourState.blSpend >= notifyCfg.blHourlyPct && did('blHourly')) {
+    return [{ t: '百炼 本小时消耗', s: 'A', c: '#e0433f' },
+            { t: hourState.blSpend.toFixed(1) + '%', s: 'B', c: '' },
+            { t: '超过 ' + fmtV(notifyCfg.blHourlyPct) + '%', s: 'C', c: '' }]
+  }
+  return false
+}
+// 通知泡泡：复用点击鲸鱼的气泡样式，只替换文案
+function showNotifBubble(lines) {
+  if (bubbleTimer) { clearTimeout(bubbleTimer); bubbleTimer = null }
+  bubbleShown = true
+  bubbleRandomActive = false
+  bubbleRandomLines = null
+  applyBubbleLines(lines)
+  bubbleBox.classList.add('dshwv-bubble-open')
+  bubbleTimer = setTimeout(hideBubble, BUBBLE_MS)
+}
+
 function clamp(v, lo, hi) { return v < lo ? lo : (v > hi ? hi : v) }
 // 窗口里外层视口：小窗模式下 == 鲸鱼 root 尺寸（base）。
 function viewport() {
@@ -599,6 +678,16 @@ function refresh(manual) {
           state.hasBailian = data.bailian.configured === false ? false : true
         }
         normalizeProvider()
+        // 通知判定优先于余额滚动/常规气泡：命中则先 render 更新余额文本（气泡内容由
+        // applyBubbleLines 覆盖，互不冲突），随后弹通知泡泡并跳过动画分支。
+        var notifLines = checkNotifs(data)
+        if (notifLines) {
+          state.status = 'ok'
+          state.message = ''
+          render()
+          showNotifBubble(notifLines)
+          return
+        }
         if (state.provider === 'bailian') {
           // 百炼不走余额滚动动画（金额语义不同），直接渲染订阅数据
           state.status = 'ok'
@@ -1153,6 +1242,7 @@ function applyConfig(d) {
   if (d && typeof d.provider === 'string') {
     state.provider = d.provider
   }
+  applyNotifyCfg(d)
   normalizeProvider()
   render()
   refresh(false)
@@ -1163,7 +1253,16 @@ function bootWidget() {
   try {
     var evt = window.__TAURI__ && window.__TAURI__.event
     if (evt && typeof evt.listen === 'function') {
-      evt.listen('refresh-balance', function () { refresh(true) })
+      evt.listen('refresh-balance', function () {
+        // 先重载配置（保存通知阈值/凭据后免重启生效），再刷新余额，避免竞态用旧阈值判通知
+        apiGetConfig().then(function (d) {
+          if (d && typeof d.provider === 'string') state.provider = d.provider
+          applyNotifyCfg(d)
+          refresh(true)
+        }).catch(function () {
+          refresh(true)
+        })
+      })
     }
   } catch (err) {}
   // 记下窗口当前逻辑坐标/尺寸（boot 时 Rust 已按配置 scale 摆好），
