@@ -57,8 +57,8 @@ async fn fetch_balance(client: &reqwest::Client, api_key: &str) -> Result<(f64, 
                     .ok_or("余额接口返回结构异常")?;
                 let total = info
                     .get("total_balance")
-                    // 官方接口 total_balance 是字符串（"110.00"），as_f64 只认 JSON number
-                    .and_then(|v| v.as_str().and_then(|s| s.parse::<f64>().ok()))
+                    // 官方接口 total_balance 是字符串（"110.00"），但兼容 JSON number 两种形态
+                    .and_then(num_or_str)
                     .ok_or("余额接口 total_balance 缺失")?;
                 let currency = info
                     .get("currency")
@@ -183,7 +183,8 @@ fn parse_bailian_subscription(body: &Value) -> Value {
         }
     }
 
-    // 兜底：任意成功响应也算 ok（字段缺失时前端显示占位）
+    // 兜底：任意成功响应也算 ok（字段缺失时前端显示占位）。
+    // 不塞 raw 原始响应：避免把敏感业务数据带进缓存/前端。
     json!({
         "ok": true,
         "remaining": percent_str,
@@ -191,7 +192,6 @@ fn parse_bailian_subscription(body: &Value) -> Value {
         "resetAtMs": reset_at,
         "remainingDays": remaining_days,
         "endTime": end_time,
-        "raw": body,
     })
 }
 
@@ -243,8 +243,18 @@ pub async fn get_balance_payload(state: &AppState) -> Value {
         Ok(pair) => pair,
         Err(e) => {
             // 瞬时网络/接口抖动：沿用最近成功余额（与 JS transient 行为一致）
-            if let Some(c) = state.cache.lock().unwrap().clone() {
+            // 先取快照释放锁，再收百炼任务（避免 std MutexGuard 跨 await 非 Send）
+            let cached = state.cache.lock().unwrap().clone();
+            if let Some(c) = cached {
+                let best = match bailian_task.take() {
+                    Some(t) => match t.await {
+                        Ok(v) => v,
+                        Err(e) => json!({ "ok": false, "error": format!("任务失败: {e}") }),
+                    },
+                    None => json!({ "ok": false, "configured": false }),
+                };
                 let mut v = c.payload.clone();
+                v["bailian"] = best;
                 v["stale"] = Value::Bool(true);
                 v["error"] = json!(e);
                 return v;

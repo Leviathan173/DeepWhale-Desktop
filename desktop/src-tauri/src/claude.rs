@@ -129,7 +129,9 @@ pub fn today_cost(dir: Option<&Path>, providers: &[ProviderCfg]) -> Option<(f64,
     let mut found = false;
     for f in files {
         let Ok(fh) = fs::File::open(&f) else { continue };
-        for line in std::io::BufReader::new(fh).lines().map_while(Result::ok) {
+        // 本地 jsonl 是有限文件，EOF 即结束；filter_map 跳过损坏行继续解析其余行
+        #[allow(clippy::lines_filter_map_ok)]
+        for line in std::io::BufReader::new(fh).lines().filter_map(Result::ok) {
             let Some((ts_ms, model, input, output, cache_read, cache_create)) =
                 parse_event(&line, today_start)
             else {

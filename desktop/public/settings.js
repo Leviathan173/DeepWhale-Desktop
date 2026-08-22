@@ -13,12 +13,6 @@
   var hadBailCookie = null
   var hadBailBody = null
 
-  function bailMsg(t, err) {
-    bailStatus.style.color = err ? '#e0433f' : '#2fa24c'
-    bailStatus.textContent = t
-    setTimeout(function () { if (!bailStatus.textContent.startsWith('正在')) bailStatus.textContent = '' }, 2500)
-  }
-
   if (bailBtn) {
     bailBtn.addEventListener('click', function () {
       bailBtn.disabled = true
@@ -58,9 +52,12 @@
     setTimeout(function () { status.textContent = '' }, 2500)
   }
 
+  var tokMsgSeq = 0
   function tokMsg(t, err) {
+    var seq = ++tokMsgSeq
     tokStatus.style.color = err ? '#e0433f' : '#2fa24c'
     tokStatus.textContent = t
+    setTimeout(function () { if (seq === tokMsgSeq) tokStatus.textContent = '' }, 2500)
   }
 
   function refreshBalance() {
@@ -468,6 +465,8 @@
         autoBtn.disabled = true
         TAPI.invoke('auto_discover_pricing').then(function (res) {
           var providers = res && res.providers
+          // 清掉重建 DOM 前可能挂着的去抖保存，避免它用旧 table 快照覆盖新结果
+          if (saveTimer) { clearTimeout(saveTimer); saveTimer = null }
           pricingBox.innerHTML = ''
           if (Array.isArray(providers)) providers.forEach(addProv)
           buildNav()
@@ -486,9 +485,10 @@
           .finally(function () { autoBtn.disabled = false })
       })
     }
-    document.getElementById('savepricing').addEventListener('click', function () {
-      doSavePricing(false)
-    })
+    var savePricingBtn = document.getElementById('savepricing')
+    if (savePricingBtn) {
+      savePricingBtn.addEventListener('click', function () { doSavePricing(false) })
+    }
     TAPI.invoke('get_usage_providers')
       .then(function (providers) {
         if (Array.isArray(providers)) providers.forEach(addProv)

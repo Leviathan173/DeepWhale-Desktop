@@ -89,7 +89,8 @@ pub fn qwen_cny(model: &str) -> Option<&'static CnyPrices> {
     if !m.contains("qwen") {
         return None;
     }
-    if m.contains("max") {
+    // preview 模型按同代 max 档计价（见函数注释）
+    if m.contains("max") || m.contains("preview") {
         Some(&CnyPrices { hit: 0.405, miss: 4.05, out: 9.45 })
     } else if m.contains("plus") {
         Some(&CnyPrices { hit: 0.15, miss: 1.5, out: 4.5 })
@@ -221,6 +222,8 @@ pub fn resolve_unit(
             if !p.metric {
                 return None;
             }
+            // 供应商已匹配但模型无内置价：0 元仍统计（与 claude jsonl 缺失
+            // providerID 时的行为不同，但那属数据源差异，这里保留统计语义）
             let u = model_unit(p, model).or_else(|| builtin_unit(model)).unwrap_or(ZERO_UNIT);
             return Some(clamp_peak(u, p.peak));
         }

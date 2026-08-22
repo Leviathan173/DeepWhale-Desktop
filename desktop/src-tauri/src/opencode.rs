@@ -192,11 +192,11 @@ pub fn today_cost(db: &Path, providers: &[ProviderCfg]) -> Option<(f64, f64)> {
         if n == 0.0 {
             continue;
         }
-        let model = v
-            .get("modelID")
-            .and_then(|x| x.as_str())
-            .unwrap_or("deepseek-v4-flash")
-            .to_string();
+        // 缺 modelID 的消息无法确定归属供应商/定价，跳过而非默认按某个模型计价
+        let Some(model) = v.get("modelID").and_then(|x| x.as_str()) else {
+            continue;
+        };
+        let model = model.to_string();
         let provider = v.get("providerID").and_then(|x| x.as_str());
         let Some(u) = resolve_unit(providers, &model, provider) else {
             continue; // 套餐/未配置供应商：不计金额

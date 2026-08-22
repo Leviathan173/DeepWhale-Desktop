@@ -15,10 +15,15 @@ fn json_url(port: u16) -> String {
 }
 
 /// 拉起 Edge/Chrome 到指定页面（独立临时 profile，不碰用户日常浏览器）。
-fn spawn_browser(url: &str) -> Result<(Child, u16), String> {
+/// 返回 (子进程, 调试端口, 临时目录路径)——调用方退出时需清理该目录。
+fn spawn_browser(url: &str) -> Result<(Child, u16, std::path::PathBuf), String> {
     let port = NEXT_PORT.fetch_add(1, Ordering::Relaxed);
     let mut path = std::env::temp_dir();
-    path.push(format!("dshwl-{}-{}", std::process::id(), port));
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    path.push(format!("dshwl-{}-{}-{}", std::process::id(), stamp, port));
     std::fs::create_dir_all(&path).map_err(|e| e.to_string())?;
     let profile = path.join("profile");
     std::fs::create_dir_all(&profile).map_err(|e| e.to_string())?;
@@ -37,7 +42,8 @@ fn spawn_browser(url: &str) -> Result<(Child, u16), String> {
 
     let child = Command::new(exe)
         .arg(format!("--remote-debugging-port={port}"))
-        .arg("--remote-allow-origins=*")
+        // 只放行本机调试页 origin，避免任意网站通过 `*` 嗅探登录态
+        .arg(format!("--remote-allow-origins=http://127.0.0.1:{port},http://localhost:{port}"))
         .arg(format!("--user-data-dir={}", profile.display()))
         .arg("--no-first-run")
         .arg("--no-default-browser-check")
@@ -45,22 +51,37 @@ fn spawn_browser(url: &str) -> Result<(Child, u16), String> {
         .arg(url)
         .spawn()
         .map_err(|e| format!("浏览器启动失败: {e}"))?;
-    Ok((child, port))
+    Ok((child, port, path))
+}
+
+/// 子进程已退出则清理临时目录并返回错误（避免残留登录态 + 避免空等 4 分钟）。
+fn child_gone(child: &mut Child, dir: &std::path::Path) -> Option<String> {
+    match child.try_wait() {
+        Ok(Some(_)) => {
+            let _ = std::fs::remove_dir_all(dir);
+            Some("浏览器进程已提前退出，请重试".to_string())
+        }
+        _ => None,
+    }
 }
 
 pub async fn capture_platform_token() -> Result<String, String> {
     let client = reqwest::Client::new();
-    let (mut child, port) = spawn_browser("https://platform.deepseek.com/usage")?;
+    let (mut child, port, dir) = spawn_browser("https://platform.deepseek.com/usage")?;
     let started = Instant::now();
     let deadline = started + Duration::from_secs(240);
 
     // 1. 等浏览器调试端口就绪 + 出现 platform 页 target
     let page_ws = loop {
+        if let Some(err) = child_gone(&mut child, &dir) {
+            return Err(err);
+        }
         if let Some(ws) = try_find_page(&client, port, "platform.deepseek.com").await {
             break ws;
         }
         if Instant::now() > deadline {
             let _ = child.kill();
+            let _ = std::fs::remove_dir_all(&dir);
             return Err("等待浏览器登录超时（4 分钟）".to_string());
         }
         tokio::time::sleep(Duration::from_millis(600)).await;
@@ -72,10 +93,14 @@ pub async fn capture_platform_token() -> Result<String, String> {
         Ok(t) => t,
         Err(e) => {
             let _ = child.kill();
+            let _ = child.wait();
+            let _ = std::fs::remove_dir_all(&dir);
             return Err(e);
         }
     };
     let _ = child.kill();
+    let _ = child.wait();
+    let _ = std::fs::remove_dir_all(&dir);
     Ok(token)
 }
 
@@ -113,18 +138,22 @@ pub struct BailianCreds {
 /// （登录后该页会自动请求这两个接口）。
 pub async fn capture_bailian_credentials() -> Result<BailianCreds, String> {
     let client = reqwest::Client::new();
-    let (mut child, port) = spawn_browser(
+    let (mut child, port, dir) = spawn_browser(
         "https://bailian.console.aliyun.com/cn-beijing?tab=plan#/efm/subscription/token-plan/personal",
     )?;
     let started = Instant::now();
     let deadline = started + Duration::from_secs(240);
 
     let page_ws = loop {
+        if let Some(err) = child_gone(&mut child, &dir) {
+            return Err(err);
+        }
         if let Some(ws) = try_find_page(&client, port, "bailian.console.aliyun.com").await {
             break ws;
         }
         if Instant::now() > deadline {
             let _ = child.kill();
+            let _ = std::fs::remove_dir_all(&dir);
             return Err("等待百炼登录超时（4 分钟）".to_string());
         }
         tokio::time::sleep(Duration::from_millis(600)).await;
@@ -134,10 +163,14 @@ pub async fn capture_bailian_credentials() -> Result<BailianCreds, String> {
         Ok(c) => c,
         Err(e) => {
             let _ = child.kill();
+            let _ = child.wait();
+            let _ = std::fs::remove_dir_all(&dir);
             return Err(e);
         }
     };
     let _ = child.kill();
+    let _ = child.wait();
+    let _ = std::fs::remove_dir_all(&dir);
     Ok(creds)
 }
 
@@ -245,8 +278,14 @@ async fn sniff_bailian(ws_url: &str, deadline: Instant) -> Result<BailianCreds, 
                     }
                     _ => {}
                 }
-                // 命令回执：post data / response body 按各自记录的命令 id 归位
+                // 命令回执：post data / response body 按各自记录的命令 id 归位；
+                // 出错（error 字段）即时返回，避免傻等 4 分钟超时。
                 if let Some(id) = v.get("id").and_then(|i| i.as_u64()) {
+                    if let Some(err) = v.get("error").and_then(|e| e.get("message")).and_then(|m| m.as_str()) {
+                        if post_cmd == Some(id) || body_cmd == Some(id) {
+                            return Err(format!("抓取失败：CDP 拒绝命令: {err}"));
+                        }
+                    }
                     if post_cmd == Some(id) {
                         if let Some(pd) = v.pointer("/result/postData").and_then(|p| p.as_str()) {
                             if pd.is_empty() {

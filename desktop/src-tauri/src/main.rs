@@ -91,10 +91,13 @@ fn create_main_window(app: &mut tauri::App) -> tauri::Result<()> {
     Ok(())
 }
 
-/// 与前端 widget.js 的 --dshw-base 公式保持一致：短边 × 0.17 × scale，夹在 [110, 短边×0.5]。
+/// 与前端 widget.js 的 --dshw-base 公式保持一致：短边 × 0.17 × scale，夹在 [110, 短边×0.45]。
+/// 上界必须保证 ≥ 下界，极小逻辑屏（如 384×216）下 `min*0.45 < 110` 会导致 f64::clamp panic。
 fn whale_base(sw: f64, sh: f64, scale: f64) -> f64 {
     let min = sw.min(sh);
-    (min * 0.17 * scale).clamp(110.0, min * 0.5)
+    let lo = 110.0;
+    let hi = (min * 0.45).max(lo);
+    (min * 0.17 * scale).clamp(lo, hi)
 }
 
 /// 主显示器逻辑尺寸（物理像素 ÷ DPI）。
@@ -229,7 +232,9 @@ async fn capture_login_token(app: tauri::AppHandle) -> Result<String, String> {
     let token = login::capture_platform_token().await?;
     let st = app.state::<AppState>();
     let _g = st.cfg.lock().unwrap_or_else(|e| e.into_inner());
-    config::write_credentials(&st.dir, None, Some(token.clone()));
+    // 只更新平台令牌，保留已有 api_key（write_credentials 的 None 会清空对应字段）
+    let existing = config::read(&st.dir).api_key;
+    config::write_credentials(&st.dir, existing, Some(token.clone()));
     Ok(token)
 }
 
@@ -386,9 +391,11 @@ fn auto_discover_pricing(app: tauri::AppHandle) -> Value {
     if let Some((prov, key)) = claude::discover_api_key() {
         keys.entry(prov).or_insert(key);
     }
+    // 只把实际要用的 deepseek 明文 key 回传（前端填输入框），其余供应商只给
+    // 标记 true 供界面提示「已发现」，避免把整串凭据暴露给 webview。
     let keys: serde_json::Map<String, Value> = keys
         .into_iter()
-        .map(|(k, v)| (k, json!(v)))
+        .map(|(k, v)| (k.clone(), if k == "deepseek" { json!(v) } else { json!(true) }))
         .collect();
     json!({ "providers": providers, "apiKeys": keys })
 }
