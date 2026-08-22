@@ -6,6 +6,8 @@ use std::path::Path;
 pub fn normalize(m: &str) -> &'static str {
     if m == "token" {
         "token"
+    } else if m == "opencode" {
+        "opencode"
     } else {
         "ledger"
     }
@@ -20,6 +22,8 @@ pub struct AppConfig {
     pub usage_mode: String,
     pub api_key: Option<String>,
     pub platform_token: Option<String>,
+    /// 可选的 opencode.db 路径覆盖（留空 → 默认 ~/.local/share/opencode/opencode.db）。
+    pub opencode_db: Option<String>,
 }
 
 impl Default for AppConfig {
@@ -32,6 +36,7 @@ impl Default for AppConfig {
             usage_mode: "ledger".to_string(),
             api_key: None,
             platform_token: None,
+            opencode_db: None,
         }
     }
 }
@@ -81,6 +86,7 @@ pub fn write_prefs(
     vol: f64,
     sound_set: &str,
     usage_mode: &str,
+    opencode_db: &str,
 ) {
     let mut cfg = read(dir);
     cfg.scale = scale;
@@ -88,6 +94,7 @@ pub fn write_prefs(
     cfg.vol = vol;
     cfg.sound_set = if sound_set == "fx1" { "fx1" } else { "duck" }.to_string();
     cfg.usage_mode = normalize(usage_mode).to_string();
+    cfg.opencode_db = Some(opencode_db.trim().to_string()).filter(|s| !s.is_empty());
     write_file(dir, &cfg.normalized());
 }
 

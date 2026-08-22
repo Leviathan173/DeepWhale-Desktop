@@ -6,6 +6,7 @@ mod balance;
 mod config;
 mod ledger;
 mod login;
+mod opencode;
 mod pricing;
 
 use std::time::Duration;
@@ -196,10 +197,11 @@ fn set_config(app: tauri::AppHandle, payload: Value) -> Result<Value, String> {
     let usage_mode = get("usageMode")
         .and_then(|v| v.as_str())
         .unwrap_or("ledger");
+    let opencode_db = get("opencodeDb").and_then(|v| v.as_str()).unwrap_or("");
     let st = app.state::<AppState>();
     let _g = st.cfg.lock().unwrap_or_else(|e| e.into_inner());
     let dir = &st.dir;
-    config::write_prefs(dir, scale, sound, vol, sound_set, usage_mode);
+    config::write_prefs(dir, scale, sound, vol, sound_set, usage_mode, opencode_db);
     Ok(json!({ "ok": true }))
 }
 

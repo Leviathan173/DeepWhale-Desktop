@@ -112,6 +112,7 @@ var usageSelect = document.createElement('select')
 usageSelect.className = 'dshwv-sound'
 usageSelect.appendChild(soundOpt('ledger', '小鲸鱼记账 (推荐)'))
 usageSelect.appendChild(soundOpt('token', '实时·令牌 (设置里自动获取)'))
+usageSelect.appendChild(soundOpt('opencode', '本地·opencode (读它自己的记账)'))
 usageSelect.addEventListener('change', function () { setUsageMode(usageSelect.value) })
 var row1 = menuRow()
 row1.appendChild(menuLabel('大小'))
@@ -555,7 +556,7 @@ function saveConfig() {
   } catch (err) {}
 }
 function setUsageMode(v) {
-  usageMode = v === 'token' ? 'token' : 'ledger'
+  usageMode = ['ledger', 'token', 'opencode'].indexOf(v) >= 0 ? v : 'ledger'
   usageSelect.value = usageMode
   saveConfig()
   refresh(false)
@@ -1031,7 +1032,7 @@ function applyConfig(d) {
     applySoundSet()
   }
   if (d && typeof d.usageMode === 'string') {
-    usageMode = d.usageMode === 'token' ? 'token' : 'ledger'
+    usageMode = ['ledger', 'token', 'opencode'].indexOf(d.usageMode) >= 0 ? d.usageMode : 'ledger'
     usageSelect.value = usageMode
   }
   refresh(false)
