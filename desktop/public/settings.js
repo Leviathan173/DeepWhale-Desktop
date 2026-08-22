@@ -112,14 +112,34 @@
     }).catch(function () {})
   }
 
-  /// 一个模型 = 上下两行（空闲/高峰）。非峰谷供应商的高峰行隐藏（display:none）。
-  /// 返回 [off 行, peak 行]。
+  /// 高峰行（仅峰谷供应商创建，避免 rowspan 跨隐藏行导致后续模型列错位）。
+  function buildPeakRow(grp) {
+    var pk = document.createElement('tr')
+    pk.className = 'mpeak'
+    var tierCell = function () {
+      var td = document.createElement('td')
+      td.className = 'tier'
+      td.textContent = '高峰'
+      return td
+    }
+    pk.appendChild(tierCell())
+    PRICE_FIELDS.forEach(function (f) {
+      var inp = priceInput(f, 'peak', grp._m)
+      grp.inputs[f].peak = inp
+      var td = document.createElement('td')
+      td.appendChild(inp)
+      pk.appendChild(td)
+    })
+    pk._grp = grp
+    return pk
+  }
+
+  /// 一个模型对应一行（非峰谷）或两行（峰谷：空闲+高峰）。
+  /// 返回 [off 行, peak 行或 null]。
   function modelRows(m, peak) {
-    var grp = { inputs: {} }
+    var grp = { inputs: {}, _m: m || null }
     var off = document.createElement('tr')
     off.className = 'moff'
-    var pk = document.createElement('tr')
-    pk.className = 'mpeak' + (peak ? '' : ' hidden')
 
     var tdPat = document.createElement('td')
     var pat = document.createElement('input')
@@ -127,16 +147,20 @@
     pat.placeholder = '模型全名，如 deepseek-v4-flash'
     if (m && m.pattern) pat.value = m.pattern
     tdPat.appendChild(pat)
-    tdPat.rowSpan = 2
+    tdPat.rowSpan = peak ? 2 : 1
 
     var tdDel = document.createElement('td')
     var del = document.createElement('button')
     del.type = 'button'
     del.className = 'del'
     del.textContent = '✕'
-    del.addEventListener('click', function () { off.remove(); pk.remove(); scheduleProvSave() })
+    del.addEventListener('click', function () {
+      off.remove()
+      if (grp.peakRow) grp.peakRow.remove()
+      scheduleProvSave()
+    })
     tdDel.appendChild(del)
-    tdDel.rowSpan = 2
+    tdDel.rowSpan = peak ? 2 : 1
 
     var tierCell = function (label) {
       var td = document.createElement('td')
@@ -156,27 +180,35 @@
     })
     off.appendChild(tdDel)
 
-    pk.appendChild(tierCell('高峰'))
-    PRICE_FIELDS.forEach(function (f) {
-      var inp = priceInput(f, 'peak', m)
-      grp.inputs[f].peak = inp
-      var td = document.createElement('td')
-      td.appendChild(inp)
-      pk.appendChild(td)
-    })
-
     grp.patInput = pat
-    off._grp = pk._grp = grp
+    grp.peakRow = null
+    off._grp = grp
     // 改名后重填内置价目
     pat.addEventListener('change', function () { refill(grp, peak) })
+    if (peak) {
+      grp.peakRow = buildPeakRow(grp)
+    }
     if (m && m.pattern) refill(grp, peak)
-    return [off, pk]
+    return [off, grp.peakRow]
   }
 
-  /// 峰谷开关切换：显示/隐藏高峰行并回填。
+  /// 峰谷开关切换：增删高峰行并回填（用 rowSpan 而非隐藏行，避免列错位）。
   function applyPeakMode(box, peak) {
-    box.querySelectorAll('tr.mpeak').forEach(function (tr) { tr.classList.toggle('hidden', !peak) })
-    box.querySelectorAll('tr.moff').forEach(function (tr) { if (tr._grp) refill(tr._grp, peak) })
+    box.querySelectorAll('tr.moff').forEach(function (tr) {
+      var g = tr._grp
+      var patTd = tr.children[1]
+      var delTd = tr.children[6]
+      if (patTd) patTd.rowSpan = peak ? 2 : 1
+      if (delTd) delTd.rowSpan = peak ? 2 : 1
+      if (peak && !g.peakRow) {
+        g.peakRow = buildPeakRow(g)
+        tr.parentNode.insertBefore(g.peakRow, tr.nextSibling)
+      } else if (!peak && g.peakRow) {
+        g.peakRow.remove()
+        g.peakRow = null
+      }
+      if (g.peakRow) refill(g, peak)
+    })
   }
 
   /// 按计费模式切换整个卡片可用态：套餐下模型区置灰并提示。
@@ -239,6 +271,15 @@
     models.className = 'prov-models'
     var table = document.createElement('table')
     table.className = 'mini'
+    // 固定布局 + colgroup：列宽稳定，不依赖各行业行 nth-child
+    var colgroup = document.createElement('colgroup')
+    var colW = ['42px', '24%', '', '', '', '', '30px']
+    colW.forEach(function (w) {
+      var col = document.createElement('col')
+      if (w) col.style.width = w
+      colgroup.appendChild(col)
+    })
+    table.appendChild(colgroup)
     var thead = document.createElement('thead')
     var hr0 = document.createElement('tr')
     hr0.innerHTML = '<th>档位</th><th>模型（精确全名）</th><th>输入</th><th>输出</th><th>缓存读取</th><th>缓存创建</th><th></th>'
@@ -253,7 +294,7 @@
     addRowBtn.className = 'tiny models-add'
     addRowBtn.textContent = '+ 添加模型'
     addRowBtn.addEventListener('click', function () {
-      modelRows(null, peak).forEach(function (tr) { tbody.appendChild(tr) })
+      modelRows(null, peak).filter(Boolean).forEach(function (tr) { tbody.appendChild(tr) })
       scheduleProvSave()
     })
     var note = document.createElement('div')
@@ -262,7 +303,7 @@
     box.append(title, models, addRowBtn, note)
     applyBillMode(box, metric)
     if (data && data.models) data.models.forEach(function (m) {
-      modelRows(m, peak).forEach(function (tr) { tbody.appendChild(tr) })
+      modelRows(m, peak).filter(Boolean).forEach(function (tr) { tbody.appendChild(tr) })
     })
     pricingBox.appendChild(box)
   }
