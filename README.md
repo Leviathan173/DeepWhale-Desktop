@@ -17,8 +17,8 @@
   - Claude Code 记账：读取 `~/.claude/projects/**` 的 jsonl 用量记录
   - 计价表：供应商/模型单价四段拆分（输入/输出/缓存读/缓存写）+ 峰谷两档；未配置模型自动套内置官方价
 - 🎚️ **汉堡菜单**（悬停鲸鱼出现）：大小缩放、音效切换等
-- 🔊 **音效**：按压/松手音效（可选 mp3，缺失时静默降级）
-- 💬 **随机台词**：点击气泡切换台词段，5 秒自动收起
+- 🔊 **音效**：按压/松手音效，三套可选（小黄鸭 / 音效1 / 鲸语，缺失时静默降级）
+- 💬 **随机台词**：点击气泡切换台词段，5 秒自动收起；**碎碎念同步语音配音**（百炼 qwen-audio-3.0-tts-plus 离线生成、内嵌播放）
 - 🧸 **按压 Q 弹**玩偶效果；左吸附水平镜像翻转
 
 ## 环境要求
@@ -93,6 +93,20 @@ desktop/
     ├── Cargo.toml
     └── tauri.conf.json
 ```
+
+## 生成鲸语音效
+
+「鲸语」音效集与气泡碎碎念配音由百炼 `qwen-audio-3.0-tts-plus` 离线生成，产物 mp3 提交进 `assets/voice/`，运行时零 API 依赖。
+
+```powershell
+cd desktop/src-tauri
+cargo run --bin tts_gen            # 幂等：已存在的 mp3 跳过；改文案后删对应文件或 --force 重跑
+```
+
+- 文本/音色/指令清单：`assets/voice/whale_voice.json`（单一事实源）
+- Key 来源：`--key` > 环境变量 `DASHSCOPE_API_KEY` > opencode `auth.json`/`opencode.json` 里的百炼 key（TokenPlan 网关自动推导 WS 地址；用普通 DashScope Key 复刻/生成时加 `--ws-url wss://dashscope.aliyuncs.com/api-ws/v1/inference`）
+- 当前 `voice` 是「声音复刻」出的专属音色（音色 id 与账号绑定，见阿里云声音复刻文档）。换账号/重做复刻后，把新 `voice_id` 填回 manifest 再重跑生成
+- 改台词文案后，同时更新 `public/widget.js` 里 `MURMUR_B/A/JOKE` 对应文本与语音 id，再重跑生成即可；`cargo test` 会兜底校验 manifest 与资源一一对应
 
 ## 验证
 

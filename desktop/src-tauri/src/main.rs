@@ -56,6 +56,7 @@ fn main() {
             capture_login_token,
             image_data_url,
             sound_data_url,
+            voice_data_url,
             get_window_bounds,
             screen_size,
             move_window,
@@ -486,6 +487,12 @@ fn image_data_url() -> String {
 #[tauri::command]
 fn sound_data_url(action: String, set: String) -> Option<String> {
     assets::sound_data_url(&action, &set)
+}
+
+/// 气泡碎碎念配音（data URL，key 对应 whale_voice.json 的 id）。
+#[tauri::command]
+fn voice_data_url(id: String) -> Option<String> {
+    assets::voice_data_url(&id)
 }
 
 /// 鲸鱼小窗逻辑坐标（相对主显示器左上角）。前端用它做拖拽/吸附计算。

@@ -11,6 +11,17 @@ pub fn normalize(m: &str) -> &'static str {
     }
 }
 
+/// 音效集：小黄鸭 / 音效1 / 鲸语（TTS 拟声）。
+pub fn sound_set(m: &str) -> &'static str {
+    if m == "fx1" {
+        "fx1"
+    } else if m == "whale" {
+        "whale"
+    } else {
+        "duck"
+    }
+}
+
 /// 单个模型的计价项（本地记账用）。
 /// pattern 对模型名做精确全名匹配。单价 = 元/百万 token：
 /// 普通四类 + 高峰四类（peak_*）。None → 该项用内置价目。
@@ -142,12 +153,7 @@ impl Default for AppConfig {
 
 impl AppConfig {
     fn normalized(mut self) -> Self {
-        self.sound_set = if self.sound_set == "fx1" {
-            "fx1"
-        } else {
-            "duck"
-        }
-        .to_string();
+        self.sound_set = sound_set(&self.sound_set).to_string();
         self.usage_mode = normalize(&self.usage_mode).to_string();
         self.provider = if self.provider == "bailian" {
             "bailian"
@@ -197,7 +203,7 @@ pub fn write_prefs(
     cfg.scale = scale;
     cfg.sound = sound;
     cfg.vol = vol;
-    cfg.sound_set = if sound_set == "fx1" { "fx1" } else { "duck" }.to_string();
+    cfg.sound_set = crate::config::sound_set(sound_set).to_string();
     cfg.usage_mode = normalize(usage_mode).to_string();
     cfg.opencode_db = Some(opencode_db.trim().to_string()).filter(|s| !s.is_empty());
     write_file(dir, &cfg.normalized());

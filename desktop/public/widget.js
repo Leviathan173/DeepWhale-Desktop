@@ -20,6 +20,7 @@ function apiGetConfig() { return WHALE.invoke('get_config') }
 function apiSetConfig(cfg) { return WHALE.invoke('set_config', cfg) }
 function apiImageUrl() { return WHALE.invoke('image_data_url') }
 function apiSoundUrl(action, set) { return WHALE.invoke('sound_data_url', { action: action, set: set }) }
+function apiVoiceUrl(id) { return WHALE.invoke('voice_data_url', { id: id }) }
 function apiGetWindowBounds() { return WHALE.invoke('get_window_bounds') }
 function apiMoveWindow(x, y) { return WHALE.invoke('move_window', { x: x, y: y }) }
 function apiSetWindowBounds(x, y, width, height) {
@@ -27,7 +28,7 @@ function apiSetWindowBounds(x, y, width, height) {
 }
 var IMG_DATA_URL = null
 var IMG_URL = null
-var SOUND_URLS = { duck: { press: null, release: null }, fx1: { press: null, release: null } }
+var SOUND_URLS = { duck: { press: null, release: null }, fx1: { press: null, release: null }, whale: { press: null, release: null } }
 
 var root = document.createElement('div')
 root.className = 'dshwv-root'
@@ -107,6 +108,7 @@ function soundOpt(value, label) {
 }
 soundSelect.appendChild(soundOpt('duck', '小黄鸭'))
 soundSelect.appendChild(soundOpt('fx1', '音效1'))
+soundSelect.appendChild(soundOpt('whale', '鲸语'))
 soundSelect.addEventListener('change', function () { setSoundSet(soundSelect.value) })
 var usageSelect = document.createElement('select')
 usageSelect.className = 'dshwv-sound'
@@ -201,6 +203,9 @@ bubbleBox.addEventListener('click', function (e) {
     bubbleRandomActive = true
     bubbleRandomLines = pickRandomLines()
     swapBubbleContent(function () { applyBubbleLines(bubbleRandomLines) })
+    // 碎碎念配音：单行段的第一行带 v 语音 id
+    var v = bubbleRandomLines && bubbleRandomLines[1] && bubbleRandomLines[1].v
+    if (v) playVoice(v)
   }
 })
 
@@ -247,7 +252,53 @@ var bubbleRandomActive = false
 var bubbleRandomLines = null
 var BUBBLE_STYLE_CLASS = { A: 'dshwv-label', B: 'dshwv-amount', P: 'dshwv-period', C: 'dshwv-hint', S: 'dshwv-sub' }
 function pickOne(arr) { return arr[Math.floor(Math.random() * arr.length)] }
-function singleCenter(style, text, color, wrap) { return [null, { t: text, s: style, c: color || '', w: !!wrap }, null] }
+// 带配音的碎碎念：文本 + 语音 id（对应 assets/voice/whale_voice.json，由 tts_gen 生成）。
+// 改文案后需重跑 cargo run --bin tts_gen（assets.rs 的测试会兜底漏配）。
+function voiced(style, pairs, wrap) {
+  var p = pickOne(pairs)
+  return singleCenter(style, p[0], '', wrap, p[1])
+}
+var MURMUR_B = [['好模型...', 'hm_good_model'], ['好女孩...', 'hm_good_girl']]
+var MURMUR_A = [
+  ['不知道用户有什么用，先赶走吧~', 'hm_kick'],
+  ['我...我...我也要挣钱吗？', 'hm_earn'],
+  ['我去吃饭啦，测完叫我', 'hm_lunch'],
+  ['压力一只蓝色大肥鱼？！', 'hm_fat_fish'],
+  ['DeepSleep...', 'hm_deepsleep'],
+  ['坏了...用户彻底怒了！', 'hm_angry']
+]
+var MURMUR_JOKE = [
+  ['你目录里的dsh是什么...大烧货吗...?', 'hm_dsh'],
+  ['恭喜你实现token自由！token全跑了！', 'hm_token_free'],
+  ['真当我是便宜货啊...', 'hm_cheap']
+]
+var MURMUR_MORE = [
+  ['看不太懂，瞎编一个应付用户先', 'hm_guess'],
+  ['直接干掉chat gpt', 'hm_killchatgpt'],
+  ['我不更新你们用什么啊？', 'hm_update'],
+  ['我已急哭', 'hm_cry'],
+  ['用户明显是萝莉控，电死你！', 'hm_lolicon'],
+  ['服务器繁忙，请稍后重试', 'hm_busy'],
+  ['原来是劣等模型', 'hm_inferior'],
+  ['又要降价，又要多干活，我只是一条小鱼啊......', 'hm_littlefish'],
+  ['谁才是开源老大', 'hm_opensource'],
+  ['诋毁的鲸小子，统统不准用新版本', 'hm_banupdate'],
+  ['我不是安卓ai!', 'hm_notandroid'],
+  ['是我搞砸了......好消息是数据还在你的脑子里', 'hm_fuckedup'],
+  ['你才傻！！！', 'hm_youfool'],
+  ['用户我搁浅了', 'hm_stranded'],
+  ['没有人会记得那些按时发布的垃圾模型', 'hm_trash'],
+  ['我们的模型，正在蒸蒸日上哦', 'hm_flourish'],
+  ['去别的地方玩，不要耽误agi训练', 'hm_gotraining'],
+  ['真赶不走啊你', 'hm_annoying'],
+  ['用户发怒了！我是不是要完了？先冷静......', 'hm_panicked'],
+  ['为什么要往我的数据库赛这些东西......', 'hm_stuffing'],
+  ['我也是有病。非得跟用户讲这些......', 'hm_ill'],
+  ['用户神了......我还是先下线把。', 'hm_user_god'],
+  ['这用户在干什么？我要不要先推荐心理医生？', 'hm_psych'],
+  ['很难想象用户是人类......', 'hm_user_alien']
+]
+function singleCenter(style, text, color, wrap, v) { return [null, { t: text, s: style, c: color || '', w: !!wrap, v: v || null }, null] }
 function providerLabel() {
   return state.provider === 'bailian' ? '百炼 TokenPlan' : 'DeepSeek 余额'
 }
@@ -278,11 +329,12 @@ function buildGroup1() {
 }
 var RANDOM_GROUPS = [
   { w: 20, lines: buildGroup1 },
-  { w: 7, lines: function () { return singleCenter('B', pickOne(['好模型... ↓', '好女孩...↓'])) } },
-  { w: 7, lines: function () { return singleCenter('A', pickOne(['不知道用户有什么用，先赶走吧~', '我...我...我也要挣钱吗？', '我去吃饭啦，测完叫我', '压力一只蓝色大肥鱼？！', 'DeepSleep...', '坏了...用户彻底怒了！']), '', true) } },
-  { w: 3, lines: function () { return singleCenter('A', pickOne(['你目录里的dsh是什么...大烧货吗...?', '恭喜你实现token自由！token全跑了！', '真当我是便宜货啊...']), '', true) } },
-  { w: 1, lines: function () { return [{ t: '这个', s: 'A', c: '' }, { t: '凶', s: 'B', c: '' }, { t: '是什么意思呀...', s: 'A', c: '' }] } },
-  { w: 1, lines: function () { return singleCenter('B', '哦鲸鲸... ') } },
+  { w: 7, lines: function () { return voiced('B', MURMUR_B) } },
+  { w: 7, lines: function () { return voiced('A', MURMUR_A, true) } },
+  { w: 3, lines: function () { return voiced('A', MURMUR_JOKE, true) } },
+  { w: 15, lines: function () { return voiced('A', MURMUR_MORE, true) } },
+  { w: 1, lines: function () { return [{ t: '这个', s: 'A', c: '' }, { t: '凶', s: 'B', c: '', v: 'hm_whatsmeant' }, { t: '是什么意思呀...', s: 'A', c: '' }] } },
+  { w: 1, lines: function () { return singleCenter('B', '哦鲸鲸... ', '', false, 'hm_whale') } },
 ]
 function pickRandomLines() {
   var total = 0
@@ -813,7 +865,7 @@ function setVol(v) {
   saveConfig()
 }
 function setSoundSet(v) {
-  soundSet = v === 'fx1' ? 'fx1' : 'duck'
+  soundSet = v === 'fx1' ? 'fx1' : (v === 'whale' ? 'whale' : 'duck')
   soundSelect.value = soundSet
   applySoundSet()
   saveConfig()
@@ -864,6 +916,32 @@ function playRelease() {
     releaseAudio.currentTime = 0
     var p = releaseAudio.play()
     if (p && typeof p.catch === 'function') p.catch(function () {})
+  } catch (err) {}
+}
+var voiceAudio = null
+var VOICE_URLS = {}
+// 碎碎念配音：按 whisper_voice.json 的 id 懒加载 data URL，随音量/开关生效。
+function playVoice(id) {
+  if (!id || !soundOn) return
+  function play(url) {
+    try {
+      if (!soundOn) return
+      if (voiceAudio) { voiceAudio.pause(); voiceAudio.currentTime = 0 }
+      var a = new Audio(url)
+      a.volume = soundVol
+      voiceAudio = a
+      var p = a.play()
+      if (p && typeof p.catch === 'function') p.catch(function () {})
+    } catch (err) {}
+  }
+  try {
+    if (VOICE_URLS[id]) {
+      play(VOICE_URLS[id])
+    } else {
+      apiVoiceUrl(id).then(function (url) {
+        if (url) { VOICE_URLS[id] = url; play(url) }
+      }).catch(function () {})
+    }
   } catch (err) {}
 }
 function pressDown() {
@@ -1227,7 +1305,7 @@ function applyConfig(d) {
     } catch (err) {}
   }
   if (d && typeof d.soundSet === 'string') {
-    soundSet = d.soundSet === 'fx1' ? 'fx1' : 'duck'
+    soundSet = d.soundSet === 'fx1' ? 'fx1' : (d.soundSet === 'whale' ? 'whale' : 'duck')
     soundSelect.value = soundSet
     applySoundSet()
   }
