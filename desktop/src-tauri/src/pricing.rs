@@ -158,8 +158,8 @@ pub fn default_providers() -> Vec<crate::config::ProviderCfg> {
             models: vec![],
         },
         ProviderCfg {
-            name: "anthropic".into(),
-            metric: true,
+            name: "claude".into(),
+            metric: false,
             peak: false,
             models: vec![],
         },
@@ -194,9 +194,10 @@ pub fn builtin_unit(model: &str) -> Option<UnitPrice> {
 
 const ZERO_UNIT: UnitPrice = UnitPrice { hit: [0.0; 2], miss: [0.0; 2], out: [0.0; 2], peak: false };
 
+/// 模型名精确匹配（忽略大小写）。不用子串：pattern 即模型全名，避免泛化误归。
 fn model_matches(patterns: &[crate::config::ModelPriceCfg], model: &str) -> bool {
     let m = model.to_ascii_lowercase();
-    patterns.iter().any(|c| m.contains(&c.pattern.to_ascii_lowercase()))
+    patterns.iter().any(|c| m == c.pattern.to_ascii_lowercase())
 }
 
 /// 解析一笔本地用量应套用的单价。
@@ -238,7 +239,7 @@ fn model_ppm(p: &crate::config::ProviderCfg, model: &str) -> Option<UnitPrice> {
     let m = model.to_ascii_lowercase();
     p.models
         .iter()
-        .find(|c| m.contains(&c.pattern.to_ascii_lowercase()))
+        .find(|c| m == c.pattern.to_ascii_lowercase())
         .and_then(|c| c.ppm)
         .map(|ppm| {
             // 峰谷供应商下用户填的单折价：高峰按 ×2（DeepSeek 官价即空/峰两档翻倍）。
@@ -355,19 +356,23 @@ mod tests {
             peak: false,
             models: vec![ModelPriceCfg { pattern: "deepseek".into(), ppm: None }],
         }];
-        // bailian 的 deepseek：按供应商名匹配 → 套餐不计（None）。
+        // 按供应商名精确匹配 → 套餐不计（None）。
         assert!(resolve_unit(&plan, "deepseek-v4-flash-0731", Some("bailian")).is_none());
-        // 无 providerID 来源且模型命中套餐 pattern → 不计。
-        assert!(resolve_unit(&plan, "deepseek-v4-flash-0731", None).is_none());
+        // 无 providerID 且泛化 pattern "deepseek" 不再精确匹配 "deepseek-v4-flash-0731"
+        // → 落到内置兜底（而非被套餐排除）。
+        let u = resolve_unit(&plan, "deepseek-v4-flash-0731", None).unwrap();
+        assert!((u.miss[0] - 1.5).abs() < 1e-9);
 
         let metric = vec![ProviderCfg {
             name: "longcat".into(),
             metric: true,
             peak: true,
-            models: vec![ModelPriceCfg { pattern: "longcat".into(), ppm: Some(0.5) }],
+            models: vec![ModelPriceCfg { pattern: "longcat-2.0".into(), ppm: Some(0.5) }],
         }];
+        // 精确全名才命中；泛化片段 "longcat" 不命中。
         let u = resolve_unit(&metric, "LongCat-2.0", None).unwrap();
         assert!((u.hit[0] - 0.5).abs() < 1e-9);
+        assert!(resolve_unit(&metric, "longcat-2.0-extra", None).is_none());
 
         // 未配置的 deepseek 兜底走内置价目。
         let u = resolve_unit(&[], "deepseek-v4-flash", None).unwrap();

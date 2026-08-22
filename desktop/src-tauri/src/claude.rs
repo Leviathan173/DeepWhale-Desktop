@@ -38,61 +38,26 @@ fn scan_jsonl(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// 根据 ~/.claude/settings.json 的 ANTHROPIC_BASE_URL 推断供应商：
-/// 阿里云百炼（token-plan/maas）→ "bailian"（套餐制），官方直连 → None。
-pub fn provider_name() -> Option<String> {
-    let mut p = projects_dir();
-    p.pop(); // projects → .claude
-    p.push("settings.json");
-    let s = fs::read_to_string(&p).ok()?;
-    let v: Value = serde_json::from_str(&s).ok()?;
-    let base = v
-        .get("env")
-        .and_then(|e| e.get("ANTHROPIC_BASE_URL"))
-        .and_then(|x| x.as_str())
-        .unwrap_or("");
-    let b = base.to_ascii_lowercase();
-    if b.contains("token-plan") || b.contains("aliyuncs") || b.contains("maas") {
-        Some("bailian".to_string())
-    } else {
-        None
-    }
-}
-
 /// settings.json 的 env 里显式配置的 API Key（ANTHROPIC_AUTH_TOKEN）。
-/// 返回 (provider 小写, key)；provider 按 baseURL 推断（百炼代理 → bailian）。
+/// Claude Code 固定归为提供商 "claude"（jsonl 里没有 providerID，无法区分更细）。
 pub fn discover_api_key() -> Option<(String, String)> {
     let mut p = projects_dir();
     p.pop();
     p.push("settings.json");
     let s = fs::read_to_string(&p).ok()?;
     let v: Value = serde_json::from_str(&s).ok()?;
-    let env = v.get("env")?;
-    let key = env
-        .get("ANTHROPIC_AUTH_TOKEN")
+    let key = v
+        .get("env")
+        .and_then(|e| e.get("ANTHROPIC_AUTH_TOKEN"))
         .and_then(|x| x.as_str())
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())?;
-    let prov = provider_name_from_url(
-        env.get("ANTHROPIC_BASE_URL").and_then(|x| x.as_str()).unwrap_or(""),
-    )
-    .unwrap_or("claude");
-    Some((prov.to_ascii_lowercase(), key))
-}
-
-fn provider_name_from_url(base: &str) -> Option<&'static str> {
-    let b = base.to_ascii_lowercase();
-    if b.contains("token-plan") || b.contains("aliyuncs") || b.contains("maas") {
-        Some("bailian")
-    } else if !b.is_empty() {
-        Some("claude")
-    } else {
-        None
-    }
+    Some(("claude".to_string(), key))
 }
 
 /// settings.json 里显式指定的模型（ANTHROPIC_DEFAULT_*_MODEL），去重小写。
-fn configured_models() -> Vec<String> {
+/// 跳过空 / `<...>` 这类非真实模型名。
+pub fn configured_models() -> Vec<String> {
     let mut p = projects_dir();
     p.pop();
     p.push("settings.json");
@@ -104,7 +69,7 @@ fn configured_models() -> Vec<String> {
                     if k.starts_with("ANTHROPIC_DEFAULT_") && k.ends_with("_MODEL") {
                         if let Some(m) = val.as_str() {
                             let m = m.to_ascii_lowercase();
-                            if !m.is_empty() {
+                            if !m.is_empty() && !m.starts_with('<') {
                                 out.insert(m);
                             }
                         }
@@ -116,32 +81,10 @@ fn configured_models() -> Vec<String> {
     out.into_iter().collect()
 }
 
-/// 自动发现：Claude Code jsonl 里实际出现的模型名（去重小写）+ settings 显式配置的模型。
-pub fn discover_models(dir: Option<&Path>) -> Vec<String> {
-    let root = dir.map(|d| d.to_path_buf()).unwrap_or_else(projects_dir);
-    let mut set: std::collections::BTreeSet<String> = configured_models().into_iter().collect();
-    let mut files = Vec::new();
-    scan_jsonl(&root, &mut files);
-    for f in files {
-        let Ok(fh) = fs::File::open(&f) else { continue };
-        for line in std::io::BufReader::new(fh).lines().map_while(Result::ok) {
-            let Ok(v) = serde_json::from_str::<Value>(&line) else { continue };
-            if v.get("type").and_then(|x| x.as_str()) != Some("assistant") {
-                continue;
-            }
-            if let Some(m) = v
-                .get("message")
-                .and_then(|m| m.get("model"))
-                .and_then(|x| x.as_str())
-            {
-                let m = m.to_ascii_lowercase();
-                if !m.is_empty() {
-                    set.insert(m);
-                }
-            }
-        }
-    }
-    set.into_iter().collect()
+/// 自动发现：只取 settings.json 声明的模型（供应商固定为 claude）。
+/// jsonl 仅用于运行时计 token，不贡献模型条目。
+pub fn discover_models(_dir: Option<&Path>) -> Vec<String> {
+    configured_models()
 }
 
 /// 单条 assistant 事件 → (epoch_ms, model, input, output, cache_read, cache_create)。
@@ -196,8 +139,8 @@ pub fn today_cost(dir: Option<&Path>, providers: &[ProviderCfg]) -> Option<(f64,
             if total_tok == 0 {
                 continue;
             }
-            let Some(u) = resolve_unit(providers, &model, None) else {
-                continue; // 套餐/未配置：不计金额
+            let Some(u) = resolve_unit(providers, &model, Some("claude")) else {
+                continue; // claude 套餐/未配置：不计金额
             };
             found = true;
             let pi = if u.peak { usize::from(crate::pricing::is_peak_time(ts_ms / 1000)) } else { 0 };
@@ -227,7 +170,7 @@ mod tests {
     }
 
     #[test]
-    fn deepseek_and_unknown() {
+    fn claude_fixed_provider_exact() {
         use crate::config::{ModelPriceCfg, ProviderCfg};
         let dir = std::env::temp_dir().join("dshw-claude-test");
         let _ = fs::remove_dir_all(&dir);
@@ -242,49 +185,43 @@ mod tests {
         ];
         fs::write(&f, lines.join("\n")).unwrap();
 
-        // 默认表：deepseek/longcat 命中 bailian 套餐 → 全部不计金额。
+        // 默认表含 claude 套餐提供器 → 全部不计金额。
         assert!(today_cost(Some(&dir), &crate::pricing::default_providers()).is_none());
 
-        // 用户把 LongCat 配成按量 + 0.5 元/百万 → 2M tokens = 1.0 元；
-        // deepseek 仍命中 bailian 套餐被排除。
+        // claude 按量 + 精确模型名：deepseek 走内置价（平档 1.5），longcat-2.0 0.5 元/百万。
         let providers = vec![ProviderCfg {
-            name: "bailian".into(),
-            metric: false,
-            peak: false,
-            models: vec![ModelPriceCfg { pattern: "deepseek".into(), ppm: None }],
-        }, ProviderCfg {
-            name: "LongCat".into(),
+            name: "claude".into(),
             metric: true,
             peak: false,
-            models: vec![ModelPriceCfg { pattern: "longcat".into(), ppm: Some(0.5) }],
+            models: vec![
+                ModelPriceCfg { pattern: "deepseek-v4-flash".into(), ppm: None },
+                ModelPriceCfg { pattern: "longcat-2.0".into(), ppm: Some(0.5) },
+            ],
         }];
         let (cost, _) = today_cost(Some(&dir), &providers).unwrap();
-        let expect = 2_000_000.0 / 1e6 * 0.5;
+        let expect = 1_000_000.0 / 1e6 * 1.5 + 2_000_000.0 / 1e6 * 0.5;
         assert!((cost - expect).abs() < 1e-9, "cost {cost} expect {expect}");
 
-        // bailian 套餐（metric=false）命中所有事件时 → 无金额。
+        // 泛化 pattern "deepseek" 精确不命中 "deepseek-v4-flash"：
+        // deepseek 兜底内置价 1.5，LongCat 未列出 → 0 元但 token 仍统计。
         let providers = vec![ProviderCfg {
-            name: "bailian".into(),
-            metric: false,
+            name: "claude".into(),
+            metric: true,
             peak: false,
             models: vec![ModelPriceCfg { pattern: "deepseek".into(), ppm: None }],
         }];
-        assert!(today_cost(Some(&dir), &providers).is_none());
+        let (cost, tokens) = today_cost(Some(&dir), &providers).unwrap();
+        assert!((cost - 1_000_000.0 / 1e6 * 1.5).abs() < 1e-9, "cost {cost}");
+        assert!((tokens - 3_000_000.0).abs() < 1.0);
 
-        // 纯深求索（无 providerID 的 deepseek 兜底内置价目）。
+        // claude 套餐（metric=false）→ 无金额。
         let providers = vec![ProviderCfg {
-            name: "deepseek".into(),
-            metric: true,
-            peak: true,
+            name: "claude".into(),
+            metric: false,
+            peak: false,
             models: vec![],
         }];
-        let (cost, tokens) = today_cost(Some(&dir), &providers).unwrap();
-        let p = crate::pricing::price_for("deepseek-v4-flash");
-        let ts = time::OffsetDateTime::parse(&today, &Rfc3339).unwrap().unix_timestamp();
-        let pi = usize::from(crate::pricing::is_peak_time(ts));
-        assert!((cost - 1_000_000.0 / 1e6 * p.miss[pi]).abs() < 1e-9, "cost {cost}");
-        // tokens 只累计计入金额的事件（LongCat 被跳过）。
-        assert!((tokens - 1_000_000.0).abs() < 1.0);
+        assert!(today_cost(Some(&dir), &providers).is_none());
 
         let _ = fs::remove_dir_all(&dir);
     }

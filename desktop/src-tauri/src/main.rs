@@ -295,6 +295,9 @@ fn auto_discover_pricing(app: tauri::AppHandle) -> Value {
         providers[pi].models.push(ModelPriceCfg { pattern: pat, ppm: None });
     };
 
+    // 已知真实模型名的集合：用于清掉残留泛化 pattern（精确匹配下它们永远不命中）。
+    let mut known: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+
     // opencode：providerID 精确归供应商。bailian/tokenplan 套餐不计，deepseek 峰谷。
     let db = opencode::db_path(cfg.opencode_db.as_deref());
     for (pid, mid) in opencode::discover_models(&db) {
@@ -302,13 +305,20 @@ fn auto_discover_pricing(app: tauri::AppHandle) -> Value {
         let peak = pid == "deepseek";
         let i = find_prov(&pid, metric, peak, &mut providers);
         add_model(&mut providers, i, &mid);
+        known.insert(mid);
     }
-    // claude：按 settings.json 推断（百炼代理 → bailian 套餐；官方 → claude 按量平档）。
-    let cname = claude::provider_name().unwrap_or_else(|| "claude".to_string());
-    let cmetric = !cname.eq_ignore_ascii_case("bailian");
-    let ci = find_prov(&cname, cmetric, false, &mut providers);
+    // claude：jsonl 无 providerID，固定供应商 "claude"；默认套餐(不计)、不峰谷；
+    // 模型仅取 settings.json 声明（ANTHROPIC_DEFAULT_*_MODEL）。
+    let ci = find_prov("claude", false, false, &mut providers);
     for m in claude::discover_models(None) {
         add_model(&mut providers, ci, &m);
+        known.insert(m);
+    }
+
+    // 精确匹配：丢弃 ppm=None 且不在 known 里的旧泛化项（如 config 残留 deepseek/longcat/qwen）；
+    // 保留用户显式填了单价的条目。
+    for p in &mut providers {
+        p.models.retain(|m| m.ppm.is_some() || known.contains(&m.pattern.to_ascii_lowercase()));
     }
 
     // 各供应商 API Key：opencode auth.json + 配置 + claude settings env，去重。

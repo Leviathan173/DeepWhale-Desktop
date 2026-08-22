@@ -76,7 +76,7 @@
     var tdPat = document.createElement('td')
     var pat = document.createElement('input')
     pat.type = 'text'
-    pat.placeholder = 'deepseek / longcat…'
+    pat.placeholder = '模型全名，如 deepseek-v4-flash'
     if (m && m.pattern) pat.value = m.pattern
     tdPat.appendChild(pat)
     var tdPpm = document.createElement('td')
@@ -159,7 +159,7 @@
     table.className = 'mini'
     var thead = document.createElement('thead')
     var hr0 = document.createElement('tr')
-    hr0.innerHTML = '<th>模型（名字匹配）</th><th>单价 元/百万 token</th><th></th>'
+    hr0.innerHTML = '<th>模型（精确全名）</th><th>单价 元/百万 token</th><th></th>'
     thead.appendChild(hr0)
     var tbody = document.createElement('tbody')
     table.append(thead, tbody)
