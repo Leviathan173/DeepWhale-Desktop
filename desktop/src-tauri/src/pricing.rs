@@ -125,6 +125,8 @@ pub struct UnitPrice {
     pub hit: [f64; 2],
     pub miss: [f64; 2],
     pub out: [f64; 2],
+    /// 缓存创建/写入（cache.creation）。内置价目暂无独立档 → 沿用 miss。
+    pub create: [f64; 2],
     /// 该单是否参与峰谷计价（false 时调用方一律取 0 档即空闲价）。
     pub peak: bool,
 }
@@ -140,9 +142,9 @@ pub fn default_providers() -> Vec<crate::config::ProviderCfg> {
             metric: false,
             peak: false,
             models: vec![
-                ModelPriceCfg { pattern: "deepseek".into(), ppm: None },
-                ModelPriceCfg { pattern: "longcat".into(), ppm: None },
-                ModelPriceCfg { pattern: "qwen".into(), ppm: None },
+                ModelPriceCfg { pattern: "deepseek".into(), ..Default::default() },
+                ModelPriceCfg { pattern: "longcat".into(), ..Default::default() },
+                ModelPriceCfg { pattern: "qwen".into(), ..Default::default() },
             ],
         },
         ProviderCfg {
@@ -172,12 +174,13 @@ pub fn builtin_unit(model: &str) -> Option<UnitPrice> {
     let m = model.to_ascii_lowercase();
     if m.contains("deepseek") {
         let p = price_for(model);
-        Some(UnitPrice { hit: p.hit, miss: p.miss, out: p.out, peak: true })
+        Some(UnitPrice { hit: p.hit, miss: p.miss, out: p.out, create: p.miss, peak: true })
     } else if m.contains("claude") {
         claude_usd(model).map(|p| UnitPrice {
             hit: [p.cache_read * USD_TO_CNY; 2],
             miss: [(p.input) * USD_TO_CNY; 2],
             out: [p.output * USD_TO_CNY; 2],
+            create: [(p.input) * USD_TO_CNY; 2],
             peak: false,
         })
     } else if m.contains("qwen") {
@@ -185,6 +188,7 @@ pub fn builtin_unit(model: &str) -> Option<UnitPrice> {
             hit: [p.hit; 2],
             miss: [p.miss; 2],
             out: [p.out; 2],
+            create: [p.miss; 2],
             peak: false,
         })
     } else {
@@ -192,7 +196,8 @@ pub fn builtin_unit(model: &str) -> Option<UnitPrice> {
     }
 }
 
-const ZERO_UNIT: UnitPrice = UnitPrice { hit: [0.0; 2], miss: [0.0; 2], out: [0.0; 2], peak: false };
+const ZERO_UNIT: UnitPrice =
+    UnitPrice { hit: [0.0; 2], miss: [0.0; 2], out: [0.0; 2], create: [0.0; 2], peak: false };
 
 /// 模型名精确匹配（忽略大小写）。不用子串：pattern 即模型全名，避免泛化误归。
 fn model_matches(patterns: &[crate::config::ModelPriceCfg], model: &str) -> bool {
@@ -216,7 +221,7 @@ pub fn resolve_unit(
             if !p.metric {
                 return None;
             }
-            let u = model_ppm(p, model).or_else(|| builtin_unit(model)).unwrap_or(ZERO_UNIT);
+            let u = model_unit(p, model).or_else(|| builtin_unit(model)).unwrap_or(ZERO_UNIT);
             return Some(clamp_peak(u, p.peak));
         }
     }
@@ -228,25 +233,33 @@ pub fn resolve_unit(
         if !p.metric {
             return None;
         }
-        let u = model_ppm(p, model).or_else(|| builtin_unit(model)).unwrap_or(ZERO_UNIT);
+        let u = model_unit(p, model).or_else(|| builtin_unit(model)).unwrap_or(ZERO_UNIT);
         return Some(clamp_peak(u, p.peak));
     }
     // 3) 兜底：deepseek/claude/qwen 系仍按内置价目计（按量）；其余不计。
     builtin_unit(model)
 }
 
-fn model_ppm(p: &crate::config::ProviderCfg, model: &str) -> Option<UnitPrice> {
+fn model_unit(p: &crate::config::ProviderCfg, model: &str) -> Option<UnitPrice> {
     let m = model.to_ascii_lowercase();
-    p.models
-        .iter()
-        .find(|c| m == c.pattern.to_ascii_lowercase())
-        .and_then(|c| c.ppm)
-        .map(|ppm| {
-            // 峰谷供应商下用户填的单折价：高峰按 ×2（DeepSeek 官价即空/峰两档翻倍）。
-            let off = ppm;
-            let peak = if p.peak { ppm * 2.0 } else { ppm };
-            UnitPrice { hit: [off, peak], miss: [off, peak], out: [off, peak], peak: true }
-        })
+    let c = p.models.iter().find(|c| m == c.pattern.to_ascii_lowercase())?;
+    if !c.priced() {
+        return None;
+    }
+    // 每个类别：用户填了用用户值（峰谷供应商 ×2），留空回退内置价目的该档。
+    let base = builtin_unit(model).unwrap_or(ZERO_UNIT);
+    let tier = |v: Option<f64>, builtin: [f64; 2]| match v {
+        Some(x) if p.peak => [x, x * 2.0],
+        Some(x) => [x, x],
+        None => builtin,
+    };
+    Some(UnitPrice {
+        hit: tier(c.cache_read, base.hit),
+        miss: tier(c.input, base.miss),
+        out: tier(c.output, base.out),
+        create: tier(c.cache_creation, base.create),
+        peak: p.peak,
+    })
 }
 
 /// 平台用量响应 → (今日费用, 今日token数)。结构与 OLD JS computeTodayUsage 一致。
@@ -354,7 +367,7 @@ mod tests {
             name: "bailian".into(),
             metric: false, // 套餐制
             peak: false,
-            models: vec![ModelPriceCfg { pattern: "deepseek".into(), ppm: None }],
+            models: vec![ModelPriceCfg { pattern: "deepseek".into(), ..Default::default() }],
         }];
         // 按供应商名精确匹配 → 套餐不计（None）。
         assert!(resolve_unit(&plan, "deepseek-v4-flash-0731", Some("bailian")).is_none());
@@ -367,12 +380,34 @@ mod tests {
             name: "longcat".into(),
             metric: true,
             peak: true,
-            models: vec![ModelPriceCfg { pattern: "longcat-2.0".into(), ppm: Some(0.5) }],
+            models: vec![ModelPriceCfg {
+                pattern: "longcat-2.0".into(),
+                input: Some(0.5),
+                output: Some(0.5),
+                cache_read: Some(0.5),
+                cache_creation: Some(0.5),
+            }],
         }];
         // 精确全名才命中；泛化片段 "longcat" 不命中。
         let u = resolve_unit(&metric, "LongCat-2.0", None).unwrap();
         assert!((u.hit[0] - 0.5).abs() < 1e-9);
+        assert!((u.create[1] - 1.0).abs() < 1e-9); // 峰谷 ×2
         assert!(resolve_unit(&metric, "longcat-2.0-extra", None).is_none());
+
+        // 只填 input 时，其余类别回退内置价目。
+        let metric = vec![ProviderCfg {
+            name: "longcat".into(),
+            metric: true,
+            peak: false,
+            models: vec![ModelPriceCfg {
+                pattern: "longcat-2.0".into(),
+                input: Some(2.0),
+                ..Default::default()
+            }],
+        }];
+        let u = resolve_unit(&metric, "longcat-2.0", None).unwrap();
+        assert!((u.miss[0] - 2.0).abs() < 1e-9);
+        assert!((u.out[0] - 0.0).abs() < 1e-9); // longcat 无内置 → 该项 0
 
         // 未配置的 deepseek 兜底走内置价目。
         let u = resolve_unit(&[], "deepseek-v4-flash", None).unwrap();

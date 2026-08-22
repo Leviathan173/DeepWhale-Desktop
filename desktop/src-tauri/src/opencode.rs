@@ -176,12 +176,19 @@ pub fn today_cost(db: &Path, providers: &[ProviderCfg]) -> Option<(f64, f64)> {
             .and_then(|c| c.get("read"))
             .and_then(|x| x.as_i64())
             .unwrap_or(0);
+        let cache_created = tokens
+            .get("cache")
+            .and_then(|c| {
+                c.get("creation").or_else(|| c.get("write"))
+            })
+            .and_then(|x| x.as_i64())
+            .unwrap_or(0);
         let input = raw("input");
         let output = raw("output");
         let reasoning = raw("reasoning");
         // 实测 opencode 的 total = input + output + reasoning + cache.read，
         // reliability：cache read 命中时 input 只记缺水部分。
-        let n = (cached_read + input + output + reasoning) as f64;
+        let n = (cached_read + cache_created + input + output + reasoning) as f64;
         if n == 0.0 {
             continue;
         }
@@ -198,6 +205,7 @@ pub fn today_cost(db: &Path, providers: &[ProviderCfg]) -> Option<(f64, f64)> {
         let pi = if u.peak { usize::from(is_peak_time(ts / 1000)) } else { 0 };
         total_tokens += n;
         cost += (cached_read as f64) / 1e6 * u.hit[pi]
+            + (cache_created as f64) / 1e6 * u.create[pi]
             + (input as f64) / 1e6 * u.miss[pi]
             + (output + reasoning) as f64 / 1e6 * u.out[pi];
     }

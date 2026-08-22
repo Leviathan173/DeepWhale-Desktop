@@ -14,20 +14,37 @@ pub fn normalize(m: &str) -> &'static str {
 }
 
 /// 单个模型的计价项（本地记账用）。
-/// pattern 对模型名做子串匹配；ppm 为可选的单折价（CNY/百万 token，作用于含缓存在内的全部
-/// token），None → 命中内置价目（deepseek 官方 / claude / qwen 表）。
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// pattern 对模型名做精确全名匹配；四类单价（CNY/百万 token，None → 该项用内置价目）：
+/// input 普通输入、output 输出、cache_read 缓存读取/命中、cache_creation 缓存创建。
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ModelPriceCfg {
     pub pattern: String,
-    #[serde(default)]
-    pub ppm: Option<f64>,
+    /// 未填的类别不落盘（省略 = 该类别用内置价目）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_read: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_creation: Option<f64>,
+}
+
+impl ModelPriceCfg {
+    /// 用户是否显式填了任一单价（auto 发现时据此保留旧条目）。
+    pub fn priced(&self) -> bool {
+        self.input.is_some()
+            || self.output.is_some()
+            || self.cache_read.is_some()
+            || self.cache_creation.is_some()
+    }
 }
 
 /// 供应商：决定「按量计费 / 套餐」与这一组模型的定价。
 /// opencode 消息带 providerID，按 name 精确匹配；没有 providerID 的来源（claude jsonl）
 /// 按其 models.pattern 匹配。metric=false（套餐/订阅制，如 tokenplan）不计入今日金额。
 /// peak=true 时按峰谷计价（DeepSeek 官方是典型：命中/输入/输出各自 [空闲,高峰] 两档）；
-/// 模型没填 ppm 也用内置峰谷价目。
+/// 模型没填任何单价也用内置峰谷价目。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderCfg {
     pub name: String,

@@ -71,6 +71,26 @@
     setTimeout(function () { pricestatus.textContent = '' }, 2500)
   }
 
+  /// 模型单价四类（元/百万 token），留空=该类别用内置价目。
+  var PRICE_FIELDS = [
+    ['input', '输入'],
+    ['output', '输出'],
+    ['cache_read', '缓存读取'],
+    ['cache_creation', '缓存创建']
+  ]
+
+  function priceCell(field, m) {
+    var td = document.createElement('td')
+    var inp = document.createElement('input')
+    inp.type = 'number'
+    inp.min = '0'
+    inp.step = '0.01'
+    inp.placeholder = '留空=内置'
+    if (m && m[field] != null) inp.value = m[field]
+    td.appendChild(inp)
+    return { key: field, el: td, input: inp }
+  }
+
   function modelRow(m) {
     var tr = document.createElement('tr')
     var tdPat = document.createElement('td')
@@ -79,22 +99,19 @@
     pat.placeholder = '模型全名，如 deepseek-v4-flash'
     if (m && m.pattern) pat.value = m.pattern
     tdPat.appendChild(pat)
-    var tdPpm = document.createElement('td')
-    var ppm = document.createElement('input')
-    ppm.type = 'number'
-    ppm.min = '0'
-    ppm.step = '0.01'
-    ppm.placeholder = '留空=内置价目'
-    if (m && m.ppm != null) ppm.value = m.ppm
-    tdPpm.appendChild(ppm)
+    var cells = PRICE_FIELDS.map(function (f) { return priceCell(f[0], m) })
     var tdDel = document.createElement('td')
     var del = document.createElement('button')
     del.type = 'button'
     del.className = 'del'
     del.textContent = '✕'
-    del.addEventListener('click', function () { tr.remove() })
+    del.addEventListener('click', function () { tr.remove(); scheduleProvSave() })
     tdDel.appendChild(del)
-    tr.append(tdPat, tdPpm, tdDel)
+    tr.append(tdPat)
+    cells.forEach(function (c) { tr.appendChild(c.el) })
+    tr.appendChild(tdDel)
+    tr._priceInputs = {}
+    cells.forEach(function (c) { tr._priceInputs[c.key] = c.input })
     return tr
   }
 
@@ -140,8 +157,8 @@
     del.type = 'button'
     del.className = 'del'
     del.textContent = '✕ 删除'
-    del.addEventListener('click', function () { box.remove(); buildNav() })
-    name.addEventListener('change', buildNav)
+    del.addEventListener('click', function () { box.remove(); buildNav(); scheduleProvSave() })
+    name.addEventListener('change', function () { buildNav(); scheduleProvSave() })
     title.append(lbl, name, radioButton('按量计费', true), radioButton('套餐·订阅制', false))
     var peakCb = document.createElement('input')
     peakCb.type = 'checkbox'
@@ -159,7 +176,7 @@
     table.className = 'mini'
     var thead = document.createElement('thead')
     var hr0 = document.createElement('tr')
-    hr0.innerHTML = '<th>模型（精确全名）</th><th>单价 元/百万 token</th><th></th>'
+    hr0.innerHTML = '<th>模型（精确全名）</th><th>输入</th><th>输出</th><th>缓存读取</th><th>缓存创建</th><th></th>'
     thead.appendChild(hr0)
     var tbody = document.createElement('tbody')
     table.append(thead, tbody)
@@ -168,7 +185,7 @@
     addRowBtn.type = 'button'
     addRowBtn.className = 'tiny models-add'
     addRowBtn.textContent = '+ 添加模型'
-    addRowBtn.addEventListener('click', function () { tbody.appendChild(modelRow(null)) })
+    addRowBtn.addEventListener('click', function () { tbody.appendChild(modelRow(null)); scheduleProvSave() })
     var note = document.createElement('div')
     note.className = 'prov-note'
 
@@ -221,17 +238,43 @@
       var metric = prov.querySelector(':scope > .prov-title input[type=radio]').checked
       var models = []
       prov.querySelectorAll('tbody tr').forEach(function (tr) {
-        var pattern = tr.querySelector('input[type=text]').value.trim()
+        var pattern = tr.querySelector(':scope input[type=text]').value.trim()
         if (!pattern) return
-        var ppmV = tr.querySelector('input[type=number]').value
         var rec = { pattern: pattern }
-        if (ppmV !== '') rec.ppm = parseFloat(ppmV)
+        PRICE_FIELDS.forEach(function (f) {
+          var v = (tr._priceInputs || {})[f[0]]
+          if (v && v.value !== '') rec[f[0]] = parseFloat(v.value)
+        })
         models.push(rec)
       })
-      out.push({ name: name, metric: metric, peak: (box.querySelector('.peak-lbl input[type=checkbox]') || {}).checked, models: models })
+      out.push({ name: name, metric: metric, peak: (prov.querySelector('.peak-lbl input[type=checkbox]') || {}).checked, models: models })
     })
     return out
   }
+
+  /// 编辑结束（去抖）后立即自动保存计价表。
+  var saveTimer = null
+
+  function scheduleProvSave() {
+    if (saveTimer) clearTimeout(saveTimer)
+    saveTimer = setTimeout(function () { doSavePricing(true) }, 600)
+  }
+
+  function doSavePricing(auto) {
+    saveTimer = null
+    TAPI.invoke('set_usage_providers', { providers: collectProviders() }).then(function () {
+      buildNav()
+      pricingMsg(auto ? '已自动保存' : '计价表已保存')
+      try {
+        var e = window.__TAURI__ && window.__TAURI__.event
+        if (e && typeof e.emit === 'function') e.emit('refresh-balance')
+      } catch (err) {}
+    }).catch(function () { pricingMsg('保存失败') })
+  }
+
+  // 任意编辑（输入/切换）都触发自动保存；程序化赋值不派发事件，初始加载/自动获取不会误存。
+  pricingBox.addEventListener('input', scheduleProvSave)
+  pricingBox.addEventListener('change', scheduleProvSave)
 
   var addProvBtn = document.getElementById('addprov')
   if (addProvBtn) {
@@ -254,21 +297,14 @@
           })
           if (others.length) filled.push(others.join('、'))
           pricingMsg(filled.length
-            ? '已自动填入凭据：' + filled.join('、') + '（点「保存」生效）'
-            : '已从本机 opencode/Claude 数据生成，检查后保存')
+            ? '已自动填入凭据：' + filled.join('、') + '（后续编辑自动保存）'
+            : '已生成计价表，检查后编辑即自动保存')
         }).catch(function () { pricingMsg('自动获取失败') })
           .finally(function () { autoBtn.disabled = false })
       })
     }
     document.getElementById('savepricing').addEventListener('click', function () {
-      TAPI.invoke('set_usage_providers', { providers: collectProviders() }).then(function () {
-        pricingMsg('计价表已保存')
-        buildNav()
-        try {
-          var e = window.__TAURI__ && window.__TAURI__.event
-          if (e && typeof e.emit === 'function') e.emit('refresh-balance')
-        } catch (err) {}
-      }).catch(function () { pricingMsg('保存失败') })
+      doSavePricing(false)
     })
     TAPI.invoke('get_usage_providers')
       .then(function (providers) {

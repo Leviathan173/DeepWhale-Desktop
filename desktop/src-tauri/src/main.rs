@@ -292,7 +292,7 @@ fn auto_discover_pricing(app: tauri::AppHandle) -> Value {
         if providers[pi].models.iter().any(|m| m.pattern.eq_ignore_ascii_case(&pat)) {
             return;
         }
-        providers[pi].models.push(ModelPriceCfg { pattern: pat, ppm: None });
+        providers[pi].models.push(ModelPriceCfg { pattern: pat, ..Default::default() });
     };
 
     // 已知真实模型名的集合：用于清掉残留泛化 pattern（精确匹配下它们永远不命中）。
@@ -315,10 +315,10 @@ fn auto_discover_pricing(app: tauri::AppHandle) -> Value {
         known.insert(m);
     }
 
-    // 精确匹配：丢弃 ppm=None 且不在 known 里的旧泛化项（如 config 残留 deepseek/longcat/qwen）；
-    // 保留用户显式填了单价的条目。
+    // 精确匹配：丢弃全 None（未填单价）且不在 known 里的旧泛化项（如 config 残留
+    // deepseek/longcat/qwen）；保留用户显式填了任一单价的条目。
     for p in &mut providers {
-        p.models.retain(|m| m.ppm.is_some() || known.contains(&m.pattern.to_ascii_lowercase()));
+        p.models.retain(|m| m.priced() || known.contains(&m.pattern.to_ascii_lowercase()));
     }
     // 丢弃没有任何模型的空供应商（纯配置残留，如旧版 tokenplan/anthropic），
     // 空的也匹配不到任何事件，留在表里只是噪音。

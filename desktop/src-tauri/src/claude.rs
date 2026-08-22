@@ -145,7 +145,8 @@ pub fn today_cost(dir: Option<&Path>, providers: &[ProviderCfg]) -> Option<(f64,
             found = true;
             let pi = if u.peak { usize::from(crate::pricing::is_peak_time(ts_ms / 1000)) } else { 0 };
             cost += (cache_read as f64) / 1e6 * u.hit[pi]
-                + (input + cache_create) as f64 / 1e6 * u.miss[pi]
+                + (cache_create as f64) / 1e6 * u.create[pi]
+                + (input as f64) / 1e6 * u.miss[pi]
                 + (output as f64) / 1e6 * u.out[pi];
             total_tokens += total_tok as f64;
         }
@@ -194,8 +195,14 @@ mod tests {
             metric: true,
             peak: false,
             models: vec![
-                ModelPriceCfg { pattern: "deepseek-v4-flash".into(), ppm: None },
-                ModelPriceCfg { pattern: "longcat-2.0".into(), ppm: Some(0.5) },
+                ModelPriceCfg { pattern: "deepseek-v4-flash".into(), ..Default::default() },
+                ModelPriceCfg {
+                    pattern: "longcat-2.0".into(),
+                    input: Some(0.5),
+                    output: Some(0.5),
+                    cache_read: Some(0.5),
+                    cache_creation: Some(0.5),
+                },
             ],
         }];
         let (cost, _) = today_cost(Some(&dir), &providers).unwrap();
@@ -208,7 +215,7 @@ mod tests {
             name: "claude".into(),
             metric: true,
             peak: false,
-            models: vec![ModelPriceCfg { pattern: "deepseek".into(), ppm: None }],
+            models: vec![ModelPriceCfg { pattern: "deepseek".into(), ..Default::default() }],
         }];
         let (cost, tokens) = today_cost(Some(&dir), &providers).unwrap();
         assert!((cost - 1_000_000.0 / 1e6 * 1.5).abs() < 1e-9, "cost {cost}");
