@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "DshWhaleBalance",
+  "productName": "DeepWhaleDesktop",
   "version": "0.1.0",
-  "identifier": "com.leviathan.dshwhale",
+  "identifier": "com.leviathan.deepwhale-desktop",
   "build": {
     "frontendDist": "../public"
   },

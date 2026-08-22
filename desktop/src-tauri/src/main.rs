@@ -24,7 +24,7 @@ fn main() {
             let dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&dir)?;
             let client = reqwest::Client::builder()
-                .user_agent("dsh-whale-desktop/0.1")
+                .user_agent("deepwhale-desktop/0.1")
                 .connect_timeout(Duration::from_secs(10))
                 .build()
                 .map_err(|e| std::io::Error::other(e.to_string()))?;
@@ -74,7 +74,7 @@ fn create_main_window(app: &mut tauri::App) -> tauri::Result<()> {
     let (sw, sh) = screen_logical(app)?;
     let base = whale_base(sw, sh, cfg.scale.clamp(1.0, 2.5));
     tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::App("index.html".into()))
-        .title("DSH 小鲸鱼余额")
+        .title("小鲸鱼余额")
         .transparent(true)
         .decorations(false)
         .always_on_top(true)
@@ -126,7 +126,7 @@ fn create_tray(app: &mut tauri::App) -> tauri::Result<()> {
                 .expect("missing default icon")
                 .clone(),
         )
-        .tooltip("DSH 小鲸鱼余额")
+        .tooltip("小鲸鱼余额")
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id().as_ref() {

@@ -1,5 +1,5 @@
 [package]
-name = "dsh-whale-desktop"
+name = "deepwhale-desktop"
 version = "0.1.0"
 description = "DeepSeek 余额小鲸鱼桌面版"
 edition = "2021"

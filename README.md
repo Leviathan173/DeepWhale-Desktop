@@ -1,4 +1,4 @@
-# DSH 小鲸鱼余额挂件（桌面版）
+# 小鲸鱼余额挂件（桌面版）
 
 > QQ 宠物式透明桌面小鲸鱼：实时展示 DeepSeek / 阿里百炼（TokenPlan 订阅制）等多供应商 API 余额与今日已用。
 
@@ -58,7 +58,7 @@ npm run tauri build   # 产出 Windows 安装包（.msi/.exe）
 
 ## 配置
 
-配置文件：Windows `%APPDATA%\com.leviathan.dshwhale\config.json`。
+配置文件：Windows `%APPDATA%\com.leviathan.deepwhale-desktop\config.json`。
 
 ### 凭证
 
