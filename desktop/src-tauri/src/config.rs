@@ -81,11 +81,24 @@ pub struct AppConfig {
     pub usage_mode: String,
     pub api_key: Option<String>,
     pub platform_token: Option<String>,
+    /// 百炼 TokenPlan 控制台接口的登录 Cookie（自动抓取，会过期需重抓）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bailian_cookie: Option<String>,
+    /// 订阅接口的完整 form body（含 params JSON / sec_token / region），原样重放最稳。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bailian_post_data: Option<String>,
     /// 可选的 opencode.db 路径覆盖（留空 → 默认 ~/.local/share/opencode/opencode.db）。
     pub opencode_db: Option<String>,
     /// 用户自定义供应商/模型计价表；None → 用内置默认表（pricing::default_providers）。
     #[serde(default)]
     pub usage_providers: Option<Vec<ProviderCfg>>,
+    /// 小鲸鱼当前展示的供应商（deepseek/bailian）。
+    #[serde(default = "default_provider")]
+    pub provider: String,
+}
+
+fn default_provider() -> String {
+    "deepseek".to_string()
 }
 
 impl Default for AppConfig {
@@ -98,8 +111,11 @@ impl Default for AppConfig {
             usage_mode: "ledger".to_string(),
             api_key: None,
             platform_token: None,
+            bailian_cookie: None,
+            bailian_post_data: None,
             opencode_db: None,
             usage_providers: None,
+            provider: default_provider(),
         }
     }
 }
@@ -173,9 +189,28 @@ pub fn write_credentials(dir: &Path, api_key: Option<String>, platform_token: Op
     write_file(dir, &cfg);
 }
 
+/// 只改百炼凭据。
+pub fn write_bailian_credentials(dir: &Path, cookie: Option<String>, post_data: Option<String>) {
+    let mut cfg = read(dir);
+    cfg.bailian_cookie = cookie.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+    cfg.bailian_post_data = post_data.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+    write_file(dir, &cfg);
+}
+
 /// 只改计价表。空表 → 存 None（走内置默认）。
 pub fn write_usage_providers(dir: &Path, providers: Vec<ProviderCfg>) {
     let mut cfg = read(dir);
     cfg.usage_providers = (!providers.is_empty()).then_some(providers);
+    write_file(dir, &cfg.normalized());
+}
+
+/// 只改展示供应商。
+pub fn write_provider(dir: &Path, provider: &str) {
+    let mut cfg = read(dir);
+    cfg.provider = if provider == "bailian" {
+        "bailian".to_string()
+    } else {
+        "deepseek".to_string()
+    };
     write_file(dir, &cfg.normalized());
 }

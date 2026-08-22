@@ -114,6 +114,25 @@ usageSelect.appendChild(soundOpt('ledger', '小鲸鱼记账 (推荐)'))
 usageSelect.appendChild(soundOpt('token', '实时·令牌 (设置里自动获取)'))
 usageSelect.appendChild(soundOpt('opencode', '本地·opencode+Claude (读本地记账)'))
 usageSelect.addEventListener('change', function () { setUsageMode(usageSelect.value) })
+var providerSelect = document.createElement('select')
+providerSelect.className = 'dshwv-sound'
+providerSelect.addEventListener('change', function () { setProvider(providerSelect.value) })
+function syncProviderSelect() {
+  var hasBail = state.hasBailian
+  providerSelect.innerHTML = ''
+  var opD = document.createElement('option')
+  opD.value = 'deepseek'
+  opD.textContent = 'DeepSeek'
+  providerSelect.appendChild(opD)
+  if (hasBail) {
+    var opB = document.createElement('option')
+    opB.value = 'bailian'
+    opB.textContent = '百炼 TokenPlan'
+    providerSelect.appendChild(opB)
+  }
+  if (!hasBail && state.provider === 'bailian') state.provider = 'deepseek'
+  providerSelect.value = state.provider
+}
 var row1 = menuRow()
 row1.appendChild(menuLabel('大小'))
 row1.appendChild(scaleInput)
@@ -121,6 +140,9 @@ row1.appendChild(scaleNumber)
 var row2 = menuRow()
 row2.appendChild(menuLabel('音效'))
 row2.appendChild(soundSelect)
+var rowProv = menuRow()
+rowProv.appendChild(menuLabel('供应商'))
+rowProv.appendChild(providerSelect)
 var volInput = document.createElement('input')
 volInput.type = 'range'
 volInput.min = '0'
@@ -151,6 +173,7 @@ setBtn.addEventListener('click', function () {
 rowSet.appendChild(setBtn)
 menuBox.appendChild(row1)
 menuBox.appendChild(row2)
+menuBox.appendChild(rowProv)
 menuBox.appendChild(row3)
 menuBox.appendChild(row4)
 menuBox.appendChild(rowSet)
@@ -159,7 +182,7 @@ var textBox = document.createElement('div')
 textBox.className = 'dshwv-text'
 var labelEl = document.createElement('div')
 labelEl.className = 'dshwv-label'
-labelEl.textContent = 'DeepSeek 余额'
+labelEl.textContent = '余额'
 var amountEl = document.createElement('div')
 amountEl.className = 'dshwv-amount'
 var hintEl = document.createElement('div')
@@ -216,7 +239,10 @@ var state = {
   todayUsage: null,
   isPeak: false,
   status: 'loading',
-  message: ''
+  message: '',
+  provider: 'deepseek',
+  hasBailian: false,
+  bailian: null
 }
 var busy = false
 var settleTimer = null
@@ -231,7 +257,24 @@ var bubbleRandomLines = null
 var BUBBLE_STYLE_CLASS = { A: 'dshwv-label', B: 'dshwv-amount', P: 'dshwv-period', C: 'dshwv-hint' }
 function pickOne(arr) { return arr[Math.floor(Math.random() * arr.length)] }
 function singleCenter(style, text, color, wrap) { return [null, { t: text, s: style, c: color || '', w: !!wrap }, null] }
+function providerLabel() {
+  return state.provider === 'bailian' ? '百炼 TokenPlan' : 'DeepSeek 余额'
+}
 function buildGroup1() {
+  if (state.provider === 'bailian') {
+    var b = state.bailian
+    if (!b || !b.ok) {
+      return [
+        { t: '百炼 · 未配置', s: 'A', c: '' },
+        { t: '请在设置获取凭据', s: 'C', c: '' }
+      ]
+    }
+    return [
+      { t: '百炼剩余额度:', s: 'A', c: '' },
+      { t: fmtQuota(b.remaining), s: 'B', c: '' },
+      { t: '重置 ' + fmtReset(b.resetAt), s: 'C', c: '' }
+    ]
+  }
   var peak = !!state.isPeak
   return [
     { t: '当前时间段为:', s: 'A', c: '' },
@@ -320,7 +363,7 @@ function restoreBubbleLines() {
   textBox.style.opacity = ''
   labelEl.style.display = ''
   labelEl.className = 'dshwv-label'
-  labelEl.textContent = 'DeepSeek 余额'
+  labelEl.textContent = providerLabel()
   labelEl.style.color = ''
   amountEl.className = 'dshwv-amount'
   amountEl.style.color = ''
@@ -372,6 +415,30 @@ function fmt(balance, currency) {
   var fixed = isFinite(num) ? num.toFixed(2) : '--'
   return currency === 'CNY' ? '¥ ' + fixed : fixed + ' ' + currency
 }
+// 百炼剩余额度可能是大量 token：>=1 亿用亿，>=1 万用万，否则原样。
+function fmtQuota(v) {
+  if (v === null || v === undefined || v === '') return '--'
+  var num = Number(v)
+  if (!isFinite(num)) return '--'
+  var abs = Math.abs(num)
+  if (abs >= 1e8) return (num / 1e8).toFixed(2).replace(/\.?0+$/, '') + ' 亿'
+  if (abs >= 1e4) return (num / 1e4).toFixed(2).replace(/\.?0+$/, '') + ' 万'
+  return String(num)
+}
+// 重置时间：ISO(带T) 或时间戳 → "MM-DD HH:MM"。
+function fmtReset(at) {
+  if (!at) return '--'
+  var d
+  if (/^\d{10}(\d{3})?$/.test(String(at))) {
+    var n = Number(at)
+    d = new Date(n > 1e12 ? n : n * 1000)
+  } else {
+    d = new Date(String(at).replace(' ', 'T'))
+  }
+  if (isNaN(d.getTime())) return String(at).slice(0, 16)
+  var p2 = function (x) { return String(x).padStart(2, '0') }
+  return p2(d.getMonth() + 1) + '-' + p2(d.getDate()) + ' ' + p2(d.getHours()) + ':' + p2(d.getMinutes())
+}
 function animateAmount(from, to, currency, duration) {
   if (animId) cancelAnimationFrame(animId)
   if (from === null || !isFinite(from)) from = to
@@ -399,7 +466,20 @@ function animateAmount(from, to, currency, duration) {
 }
 function render() {
   var amount, hint
-  if (state.status === 'error') {
+  labelEl.textContent = providerLabel()
+  if (state.provider === 'bailian') {
+    var b = state.bailian
+    if (state.status === 'error') {
+      amount = '--'
+      hint = state.message ? state.message.slice(0, 14) : '获取失败 · 点击重试'
+    } else if (!b || !b.ok) {
+      amount = '--'
+      hint = (b && b.error) ? (b.configured === false ? '未配置百炼 · 请在设置获取' : b.error.slice(0, 14)) : '未配置百炼'
+    } else {
+      amount = fmtQuota(b.remaining)
+      hint = '剩余额度 ' + (b.total != null ? fmtQuota(b.total) : '') + ' · 重置 ' + fmtReset(b.resetAt)
+    }
+  } else if (state.status === 'error') {
     amount = shown !== null ? fmt(shown, state.currency) : '--'
     hint = state.message ? state.message.slice(0, 14) : '获取失败 · 点击重试'
   } else if (state.balance === null) {
@@ -506,7 +586,13 @@ function refresh(manual) {
         state.message = ''
         state.todayUsage = data.todayUsage !== undefined ? data.todayUsage : null
         state.isPeak = !!data.isPeak
-        if (changed && !currencyChanged) {
+        state.bailian = (data && data.bailian) || null
+        syncProviderSelect()
+        if (state.provider === 'bailian') {
+          // 百炼不走余额滚动动画（金额语义不同），直接渲染订阅数据
+          state.status = 'ok'
+          render()
+        } else if (changed && !currencyChanged) {
           if (!manual) {
             showBubble()
             state.status = 'changing'
@@ -552,13 +638,23 @@ var soundSet = 'duck'
 var usageMode = 'ledger'
 function saveConfig() {
   try {
-    apiSetConfig({ scale: state.scale, sound: soundOn, vol: soundVol, soundSet: soundSet, usageMode: usageMode })
+    apiSetConfig({ scale: state.scale, sound: soundOn, vol: soundVol, soundSet: soundSet, usageMode: usageMode, provider: state.provider })
   } catch (err) {}
 }
 function setUsageMode(v) {
   usageMode = ['ledger', 'token', 'opencode'].indexOf(v) >= 0 ? v : 'ledger'
   usageSelect.value = usageMode
   saveConfig()
+  refresh(false)
+}
+function setProvider(v) {
+  if (!(v === 'deepseek' || v === 'bailian')) v = 'deepseek'
+  if (v === 'bailian' && !state.hasBailian) v = 'deepseek'
+  state.provider = v
+  providerSelect.value = v
+  shown = null
+  saveConfig()
+  render()
   refresh(false)
 }
 function scaleToDisplay(s) {
@@ -1035,6 +1131,14 @@ function applyConfig(d) {
     usageMode = ['ledger', 'token', 'opencode'].indexOf(d.usageMode) >= 0 ? d.usageMode : 'ledger'
     usageSelect.value = usageMode
   }
+  if (d && typeof d.hasBailian === 'boolean') {
+    state.hasBailian = d.hasBailian
+  }
+  if (d && typeof d.provider === 'string') {
+    state.provider = d.provider === 'bailian' && state.hasBailian ? 'bailian' : 'deepseek'
+  }
+  syncProviderSelect()
+  render()
   refresh(false)
 }
 function bootWidget() {

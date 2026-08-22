@@ -47,6 +47,8 @@ fn main() {
             set_config,
             save_credentials,
             load_credentials,
+            capture_bailian_credentials,
+            save_bailian_credentials,
             get_usage_providers,
             set_usage_providers,
             auto_discover_pricing,
@@ -186,6 +188,8 @@ fn get_config(app: tauri::AppHandle) -> Value {
         "soundSet": cfg.sound_set,
         "usageMode": cfg.usage_mode,
         "hasApiKey": cfg.api_key.is_some(),
+        "provider": cfg.provider,
+        "hasBailian": cfg.bailian_cookie.is_some() && cfg.bailian_post_data.is_some(),
     })
 }
 
@@ -204,10 +208,12 @@ fn set_config(app: tauri::AppHandle, payload: Value) -> Result<Value, String> {
         .and_then(|v| v.as_str())
         .unwrap_or("ledger");
     let opencode_db = get("opencodeDb").and_then(|v| v.as_str()).unwrap_or("");
+    let provider = get("provider").and_then(|v| v.as_str()).unwrap_or("deepseek");
     let st = app.state::<AppState>();
     let _g = st.cfg.lock().unwrap_or_else(|e| e.into_inner());
     let dir = &st.dir;
     config::write_prefs(dir, scale, sound, vol, sound_set, usage_mode, opencode_db);
+    config::write_provider(dir, provider);
     Ok(json!({ "ok": true }))
 }
 
@@ -232,6 +238,8 @@ fn save_credentials(
     app: tauri::AppHandle,
     api_key: Option<String>,
     platform_token: Option<String>,
+    #[allow(unused_variables)] bailian_cookie: Option<String>,
+    #[allow(unused_variables)] bailian_post_data: Option<String>,
 ) -> Value {
     let st = app.state::<AppState>();
     let _g = st.cfg.lock().unwrap_or_else(|e| e.into_inner());
@@ -244,7 +252,52 @@ fn load_credentials(app: tauri::AppHandle) -> Value {
     let st = app.state::<AppState>();
     let _g = st.cfg.lock().unwrap_or_else(|e| e.into_inner());
     let cfg = config::read(&st.dir);
-    json!({ "apiKey": cfg.api_key, "platformToken": cfg.platform_token })
+    json!({
+        "apiKey": cfg.api_key,
+        "platformToken": cfg.platform_token,
+        "bailianCookie": cfg.bailian_cookie,
+        "bailianPostData": cfg.bailian_post_data,
+    })
+}
+
+/// 百炼 TokenPlan：自动抓取 Cookie + 完整订阅请求 body + 响应样本，写回 config。
+#[tauri::command]
+async fn capture_bailian_credentials(app: tauri::AppHandle) -> Result<Value, String> {
+    let creds = login::capture_bailian_credentials().await?;
+    let st = app.state::<AppState>();
+    let _g = st.cfg.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = &st.dir;
+    // 响应样本落盘，供解析器定稿（探索期调试用）。
+    if let Err(e) = std::fs::write(dir.join("bailian_sample.json"), &creds.sample) {
+        eprintln!("bailian sample write failed: {e}");
+    }
+    config::write_bailian_credentials(dir, Some(creds.cookie.clone()), Some(creds.post_data.clone()));
+    if let Some(win) = app.get_webview_window("main") {
+        let _ = win.emit("refresh-balance", ());
+    }
+    Ok(json!({
+        "bailianCookie": creds.cookie,
+        "bailianPostData": creds.post_data,
+    }))
+}
+
+/// 手动保存百炼凭据（留空 = 保留原值）。
+#[tauri::command]
+fn save_bailian_credentials(
+    app: tauri::AppHandle,
+    b_cookie: Option<String>,
+    b_post_data: Option<String>,
+) -> Value {
+    let st = app.state::<AppState>();
+    let _g = st.cfg.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = &st.dir;
+    let cfg = config::read(dir);
+    let cookie = b_cookie.filter(|s| !s.trim().is_empty()).or(cfg.bailian_cookie);
+    let post_data = b_post_data
+        .filter(|s| !s.trim().is_empty())
+        .or(cfg.bailian_post_data);
+    config::write_bailian_credentials(dir, cookie, post_data);
+    json!({ "ok": true })
 }
 
 /// 读取计价表（未配置时返回内置默认表，供设置页编辑）。

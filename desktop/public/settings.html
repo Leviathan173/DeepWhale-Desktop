@@ -40,6 +40,19 @@
       background: #fff;
     }
     .hint { font-size: 12px; color: #9fb0d9; margin: 4px 0 10px; line-height: 1.5; }
+    .hint code { background: rgba(32,49,112,.08); padding: 1px 4px; border-radius: 4px; }
+    textarea {
+      width: 100%;
+      box-sizing: border-box;
+      padding: 7px 10px;
+      border: 1px solid rgba(32, 49, 112, .4);
+      border-radius: 6px;
+      font-size: 12px;
+      font-family: ui-monospace, Consolas, monospace;
+      color: #203170;
+      background: #fff;
+      resize: vertical;
+    }
     .row { display: flex; align-items: center; gap: 10px; margin-top: 14px; }
     button {
       padding: 8px 22px;
@@ -123,6 +136,28 @@
         <div class="row">
           <button id="save">保存</button>
           <span id="status"></span>
+        </div>
+      </section>
+
+      <section id="sec-bailian">
+        <h1>百炼令牌套餐（订阅制）</h1>
+        <div class="hint">
+          显示<b>七天剩余额度</b>与<b>重置时间</b>。该接口在登录后的百炼控制台内，
+          无公开 API-key 查询入口，需自动抓取登录凭据。<br>
+          点击下方按钮，在打开的独立浏览器里登录百炼控制台（会自动打开
+          TokenPlan 个人版页面），随后自动抓取请求 Cookie 与完整请求体并保存。<br>
+          阿里云登录态（Cookie）会过期；过期后重新点一次「自动获取百炼凭据」即可。<br>
+          备用：抓取失败时可自行在 DevTools Network 里复制订阅接口
+          <code>data/api.json</code> 请求的 <b>Cookie</b> 与 <b>Request Body</b> 填入下方框。
+        </div>
+        <label for="bailian-cookie">百炼 Cookie（请求头，自动抓取时会填充）</label>
+        <input id="bailian-cookie" type="password" placeholder="留空=保留原值" autocomplete="off" />
+        <label for="bailian-post-data">百炼订阅请求 Body（params=...&region=...&sec_token=...）</label>
+        <textarea id="bailian-post-data" rows="3" placeholder="留空=保留原值"></textarea>
+        <div class="row">
+          <button id="autobailian" class="ghost">自动获取百炼凭据</button>
+          <button id="savebailian">保存百炼凭据</button>
+          <span id="bailianstatus"></span>
         </div>
       </section>
 

@@ -5,6 +5,59 @@
   var status = document.getElementById('status')
   var tokBtn = document.getElementById('autotoken')
   var tokStatus = document.getElementById('tokstatus')
+  var bailCookEl = document.getElementById('bailian-cookie')
+  var bailBodyEl = document.getElementById('bailian-post-data')
+  var bailBtn = document.getElementById('autobailian')
+  var bailSaveBtn = document.getElementById('savebailian')
+  var bailStatus = document.getElementById('bailianstatus')
+  var hadBailCookie = null
+  var hadBailBody = null
+
+  function bailMsg(t, err) {
+    bailStatus.style.color = err ? '#e0433f' : '#2fa24c'
+    bailStatus.textContent = t
+    setTimeout(function () { if (!bailStatus.textContent.startsWith('正在')) bailStatus.textContent = '' }, 2500)
+  }
+
+  if (bailBtn) {
+    bailBtn.addEventListener('click', function () {
+      bailBtn.disabled = true
+      bailMsg('正在打开浏览器…请在独立窗口里登录百炼控制台')
+      TAPI.invoke('capture_bailian_credentials').then(function (res) {
+        if (res && res.bailianCookie) {
+          bailCookEl.value = res.bailianCookie
+          hadBailCookie = res.bailianCookie
+        }
+        if (res && res.bailianPostData) {
+          bailBodyEl.value = res.bailianPostData
+          hadBailBody = res.bailianPostData
+        }
+        bailMsg('已自动获取并保存百炼凭据 ✓')
+        try {
+          var e = window.__TAURI__ && window.__TAURI__.event
+          if (e && typeof e.emit === 'function') e.emit('refresh-balance')
+        } catch (err) {}
+      }).catch(function (e) {
+        bailMsg('失败：' + ((e && e.message) || '请尝试手动粘贴'), true)
+      }).finally(function () { bailBtn.disabled = false })
+    })
+  }
+
+  if (bailSaveBtn) {
+    bailSaveBtn.addEventListener('click', function () {
+      bailMsg('正在保存…')
+      TAPI.invoke('save_bailian_credentials', {
+        bCookie: ((bailCookEl && bailCookEl.value) || '').trim() || hadBailCookie,
+        bPostData: ((bailBodyEl && bailBodyEl.value) || '').trim() || hadBailBody
+      }).then(function () {
+        bailMsg('百炼凭据已保存', false)
+        try {
+          var e = window.__TAURI__ && window.__TAURI__.event
+          if (e && typeof e.emit === 'function') e.emit('refresh-balance')
+        } catch (err) {}
+      }).catch(function () { bailMsg('保存失败', true) })
+    })
+  }
 
   function msg(t) {
     status.textContent = t
@@ -55,6 +108,8 @@
     if (c) {
       if (c.apiKey) { apiEl.value = c.apiKey; hadKey = c.apiKey }
       if (c.platformToken) { tokEl.value = c.platformToken; hadToken = c.platformToken }
+      if (c.bailianCookie) { bailCookEl.value = c.bailianCookie; hadBailCookie = c.bailianCookie }
+      if (c.bailianPostData) { bailBodyEl.value = c.bailianPostData; hadBailBody = c.bailianPostData }
     }
   }
   TAPI.invoke('load_credentials')
@@ -332,6 +387,7 @@
     }
     title('设置')
     link('凭据设置', 'sec-creds')
+    link('百炼令牌套餐', 'sec-bailian')
     link('用量计价', 'sec-pricing')
     var boxCount = pricingBox.querySelectorAll('.prov').length
     if (boxCount > 0) {
