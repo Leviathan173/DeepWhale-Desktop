@@ -46,6 +46,21 @@
     button.ghost:hover { background: #eef1fa; }
     #status { font-size: 13px; color: #2fa24c; }
     #tokstatus { font-size: 12px; color: #2fa24c; line-height: 1.5; }
+
+    /* 计价表编辑 */
+    hr { border: none; border-top: 1px solid rgba(32,49,112,.15); margin: 20px 0 12px; }
+    .prov { border: 1px solid rgba(32,49,112,.25); border-radius: 8px; padding: 10px 12px; margin: 8px 0; background: #fff; }
+    .prov-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .prov-head input[type="text"] { width: 160px; }
+    .prov-head label { display: inline-flex; align-items: center; gap: 4px; margin: 0; font-size: 12px; }
+    .prov-head input[type="checkbox"] { width: auto; }
+    table.mini { width: 100%; border-collapse: collapse; margin-top: 6px; }
+    table.mini td { padding: 3px 6px 3px 0; }
+    table.mini input { padding: 4px 8px; font-size: 12px; }
+    table.mini input[type="text"] { width: 100%; }
+    table.mini input[type="number"] { width: 110px; }
+    .del { background: none; border: none; color: #e0433f; cursor: pointer; font-size: 14px; }
+    .tiny { padding: 4px 10px; font-size: 12px; }
   </style>
 </head>
 <body>
@@ -71,6 +86,21 @@
   <div class="row">
     <button id="save">保存</button>
     <span id="status"></span>
+  </div>
+
+  <hr>
+  <h1>用量计价（本地记账）</h1>
+  <div class="hint">
+    「本地·opencode+Claude」模式按此表算今日金额。<br>
+    供应商勾选 <b>按量计费</b> 才计入金额；套餐/订阅制（如百炼 tokenplan）不勾，不计入。<br>
+    模型「单价」为 <b>元 / 百万 token</b>（作用含缓存在内的全部 token），留空 = 用内置价目。<br>
+    opencode 数据按供应商名（providerID）匹配；Claude Code 数据按模型名匹配。全部删空 = 恢复默认。
+  </div>
+  <div id="pricing"></div>
+  <div class="row">
+    <button type="button" class="tiny" id="addprov">+ 新增供应商</button>
+    <button type="button" class="tiny" id="savepricing">保存计价表</button>
+    <span id="pricestatus"></span>
   </div>
 
   <script src="settings.js"></script>

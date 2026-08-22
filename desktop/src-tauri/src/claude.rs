@@ -9,7 +9,8 @@ use std::io::BufRead;
 use std::path::{Path, PathBuf};
 use time::format_description::well_known::Rfc3339;
 
-use crate::pricing::{claude_usd, price_for, qwen_cny, USD_TO_CNY};
+use crate::config::ProviderCfg;
+use crate::pricing::resolve_unit;
 
 /// `~/.claude/projects` 默认根目录（env HOME/USERPROFILE）。
 fn projects_dir() -> PathBuf {
@@ -66,9 +67,9 @@ fn parse_event(line: &str, today_start: i64) -> Option<(i64, String, i64, i64, i
 }
 
 /// 累计「今天」全部 Claude Code 会话费用（CNY）与总 token。
-/// unknown_ppm: 未知名模型（代理别名如 LongCat-2.0）的 CNY/百万 token 折合价，
-/// None 时这类模型不计钱。读不到数据返回 None（上层回退）。
-pub fn today_cost(dir: Option<&Path>, unknown_ppm: Option<f64>) -> Option<(f64, f64)> {
+/// 只算按量计费供应商（providers 表中 metric=true）；套餐/未配置模型不计金额。
+/// 读不到数据返回 None（上层回退）。
+pub fn today_cost(dir: Option<&Path>, providers: &[ProviderCfg]) -> Option<(f64, f64)> {
     let root = dir.map(|d| d.to_path_buf()).unwrap_or_else(projects_dir);
     let mut files = Vec::new();
     scan_jsonl(&root, &mut files);
@@ -89,52 +90,21 @@ pub fn today_cost(dir: Option<&Path>, unknown_ppm: Option<f64>) -> Option<(f64, 
             if total_tok == 0 {
                 continue;
             }
+            let Some(u) = resolve_unit(providers, &model, None) else {
+                continue; // 套餐/未配置：不计金额
+            };
             found = true;
             let pi = usize::from(crate::pricing::is_peak_time(ts_ms / 1000));
-            let m = model.to_ascii_lowercase();
-            let ev_cost = if m.contains("deepseek") {
-                let p = price_for(&model);
-                (cache_read as f64) / 1e6 * p.hit[pi]
-                    + (input + cache_create) as f64 / 1e6 * p.miss[pi]
-                    + (output as f64) / 1e6 * p.out[pi]
-            } else if m.contains("claude") {
-                match claude_usd(&model) {
-                    Some(p) => {
-                        ((input as f64) / 1e6 * p.input
-                            + (output as f64) / 1e6 * p.output
-                            + (cache_read as f64) / 1e6 * p.cache_read
-                            + (cache_create as f64) / 1e6 * p.cache_write)
-                            * USD_TO_CNY
-                    }
-                    None => unknown_model_cost(total_tok, unknown_ppm),
-                }
-            } else if m.contains("qwen") {
-                match qwen_cny(&model) {
-                    Some(p) => {
-                        (cache_read as f64) / 1e6 * p.hit
-                            + (input + cache_create) as f64 / 1e6 * p.miss
-                            + (output as f64) / 1e6 * p.out
-                    }
-                    None => unknown_model_cost(total_tok, unknown_ppm),
-                }
-            } else {
-                unknown_model_cost(total_tok, unknown_ppm)
-            };
+            cost += (cache_read as f64) / 1e6 * u.hit[pi]
+                + (input + cache_create) as f64 / 1e6 * u.miss[pi]
+                + (output as f64) / 1e6 * u.out[pi];
             total_tokens += total_tok as f64;
-            cost += ev_cost;
         }
     }
     if found {
         Some((cost, total_tokens))
     } else {
         None
-    }
-}
-
-fn unknown_model_cost(total_tok: i64, unknown_ppm: Option<f64>) -> f64 {
-    match unknown_ppm {
-        Some(ppm) => total_tok as f64 / 1e6 * ppm,
-        None => 0.0,
     }
 }
 
@@ -152,6 +122,7 @@ mod tests {
 
     #[test]
     fn deepseek_and_unknown() {
+        use crate::config::{ModelPriceCfg, ProviderCfg};
         let dir = std::env::temp_dir().join("dshw-claude-test");
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
@@ -165,18 +136,45 @@ mod tests {
         ];
         fs::write(&f, lines.join("\n")).unwrap();
 
-        // 未配置 unknown 单价 → LongCat 记 0，只算 deepseek 1M input。
-        let (cost, tokens) = today_cost(Some(&dir), None).unwrap();
-        let p = price_for("deepseek-v4-flash");
+        // 默认表：deepseek/longcat 命中 bailian 套餐 → 全部不计金额。
+        assert!(today_cost(Some(&dir), &crate::pricing::default_providers()).is_none());
+
+        // 用户把 LongCat 配成按量 + 0.5 元/百万 → 2M tokens = 1.0 元；
+        // deepseek 仍命中 bailian 套餐被排除。
+        let providers = vec![ProviderCfg {
+            name: "bailian".into(),
+            metric: false,
+            models: vec![ModelPriceCfg { pattern: "deepseek".into(), ppm: None }],
+        }, ProviderCfg {
+            name: "LongCat".into(),
+            metric: true,
+            models: vec![ModelPriceCfg { pattern: "longcat".into(), ppm: Some(0.5) }],
+        }];
+        let (cost, _) = today_cost(Some(&dir), &providers).unwrap();
+        let expect = 2_000_000.0 / 1e6 * 0.5;
+        assert!((cost - expect).abs() < 1e-9, "cost {cost} expect {expect}");
+
+        // bailian 套餐（metric=false）命中所有事件时 → 无金额。
+        let providers = vec![ProviderCfg {
+            name: "bailian".into(),
+            metric: false,
+            models: vec![ModelPriceCfg { pattern: "deepseek".into(), ppm: None }],
+        }];
+        assert!(today_cost(Some(&dir), &providers).is_none());
+
+        // 纯深求索（无 providerID 的 deepseek 兜底内置价目）。
+        let providers = vec![ProviderCfg {
+            name: "deepseek".into(),
+            metric: true,
+            models: vec![],
+        }];
+        let (cost, tokens) = today_cost(Some(&dir), &providers).unwrap();
+        let p = crate::pricing::price_for("deepseek-v4-flash");
         let ts = time::OffsetDateTime::parse(&today, &Rfc3339).unwrap().unix_timestamp();
         let pi = usize::from(crate::pricing::is_peak_time(ts));
         assert!((cost - 1_000_000.0 / 1e6 * p.miss[pi]).abs() < 1e-9, "cost {cost}");
-        assert!((tokens - 3_000_000.0).abs() < 1.0);
-
-        // 配置 0.5 元/百万 → LongCat 2M tokens = 1.0 元。
-        let (cost, _) = today_cost(Some(&dir), Some(0.5)).unwrap();
-        let expect = 1_000_000.0 / 1e6 * p.miss[pi] + 2_000_000.0 / 1e6 * 0.5;
-        assert!((cost - expect).abs() < 1e-9, "cost {cost} expect {expect}");
+        // tokens 只累计计入金额的事件（LongCat 被跳过）。
+        assert!((tokens - 1_000_000.0).abs() < 1.0);
 
         let _ = fs::remove_dir_all(&dir);
     }

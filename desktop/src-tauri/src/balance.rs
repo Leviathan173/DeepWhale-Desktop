@@ -161,9 +161,15 @@ pub async fn get_balance_payload(state: &AppState) -> Value {
         }
     } else if mode == "opencode" {
         let db = opencode::db_path(cfg.opencode_db.as_deref());
-        let unknown_ppm = cfg.unknown_price_per_m;
+        let providers = cfg
+            .usage_providers
+            .clone()
+            .unwrap_or_else(pricing::default_providers);
         // 本地总账：opencode.db + Claude Code jsonl 叠加；两者都读不到才回退 ledger。
-        let cost = match (opencode::today_cost(&db), claude::today_cost(None, unknown_ppm)) {
+        let cost = match (
+            opencode::today_cost(&db, &providers),
+            claude::today_cost(None, &providers),
+        ) {
             (Some((a, _)), Some((b, _))) => Some(a + b),
             (Some((a, _)), None) => Some(a),
             (None, Some((b, _))) => Some(b),

@@ -47,6 +47,8 @@ fn main() {
             set_config,
             save_credentials,
             load_credentials,
+            get_usage_providers,
+            set_usage_providers,
             open_settings,
             capture_login_token,
             image_data_url,
@@ -240,6 +242,24 @@ fn load_credentials(app: tauri::AppHandle) -> Value {
     let _g = st.cfg.lock().unwrap_or_else(|e| e.into_inner());
     let cfg = config::read(&st.dir);
     json!({ "apiKey": cfg.api_key, "platformToken": cfg.platform_token })
+}
+
+/// 读取计价表（未配置时返回内置默认表，供设置页编辑）。
+#[tauri::command]
+fn get_usage_providers(app: tauri::AppHandle) -> Value {
+    let st = app.state::<AppState>();
+    let _g = st.cfg.lock().unwrap_or_else(|e| e.into_inner());
+    let cfg = config::read(&st.dir);
+    json!(cfg.usage_providers.unwrap_or_else(pricing::default_providers))
+}
+
+/// 保存计价表。
+#[tauri::command]
+fn set_usage_providers(app: tauri::AppHandle, providers: Vec<config::ProviderCfg>) -> Value {
+    let st = app.state::<AppState>();
+    let _g = st.cfg.lock().unwrap_or_else(|e| e.into_inner());
+    config::write_usage_providers(&st.dir, providers);
+    json!({ "ok": true })
 }
 
 #[tauri::command]

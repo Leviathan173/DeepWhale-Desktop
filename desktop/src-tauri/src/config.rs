@@ -13,6 +13,27 @@ pub fn normalize(m: &str) -> &'static str {
     }
 }
 
+/// 单个模型的计价项（本地记账用）。
+/// pattern 对模型名做子串匹配；ppm 为可选的单折价（CNY/百万 token，作用于含缓存在内的全部
+/// token），None → 命中内置价目（deepseek 官方 / claude / qwen 表）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelPriceCfg {
+    pub pattern: String,
+    #[serde(default)]
+    pub ppm: Option<f64>,
+}
+
+/// 供应商：决定「按量计费 / 套餐」与这一组模型的定价。
+/// opencode 消息带 providerID，按 name 精确匹配；没有 providerID 的来源（claude jsonl）
+/// 按其 models.pattern 匹配。metric=false（套餐/订阅制，如 tokenplan）不计入今日金额。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderCfg {
+    pub name: String,
+    pub metric: bool,
+    #[serde(default)]
+    pub models: Vec<ModelPriceCfg>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
     pub scale: f64,
@@ -24,9 +45,9 @@ pub struct AppConfig {
     pub platform_token: Option<String>,
     /// 可选的 opencode.db 路径覆盖（留空 → 默认 ~/.local/share/opencode/opencode.db）。
     pub opencode_db: Option<String>,
-    /// 本地记账里「未知名别名模型」（如 LongCat-2.0 代理别名）的单折价：
-    /// CNY / 百万 token，作用于该类模型的全部 token。None → 这类模型不计钱。
-    pub unknown_price_per_m: Option<f64>,
+    /// 用户自定义供应商/模型计价表；None → 用内置默认表（pricing::default_providers）。
+    #[serde(default)]
+    pub usage_providers: Option<Vec<ProviderCfg>>,
 }
 
 impl Default for AppConfig {
@@ -40,7 +61,7 @@ impl Default for AppConfig {
             api_key: None,
             platform_token: None,
             opencode_db: None,
-            unknown_price_per_m: None,
+            usage_providers: None,
         }
     }
 }
@@ -112,4 +133,11 @@ pub fn write_credentials(dir: &Path, api_key: Option<String>, platform_token: Op
         .map(|k| k.trim().to_string())
         .filter(|k| !k.is_empty());
     write_file(dir, &cfg);
+}
+
+/// 只改计价表。空表 → 存 None（走内置默认）。
+pub fn write_usage_providers(dir: &Path, providers: Vec<ProviderCfg>) {
+    let mut cfg = read(dir);
+    cfg.usage_providers = (!providers.is_empty()).then_some(providers);
+    write_file(dir, &cfg.normalized());
 }

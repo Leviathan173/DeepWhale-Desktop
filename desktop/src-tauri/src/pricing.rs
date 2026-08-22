@@ -46,16 +46,14 @@ pub struct UsdPrices {
     pub input: f64,
     pub output: f64,
     pub cache_read: f64,
-    pub cache_write: f64,
 }
 
 macro_rules! usd_prices {
-    ($input:expr, $output:expr, $cache_read:expr, $cache_write:expr) => {
+    ($input:expr, $output:expr, $cache_read:expr) => {
         UsdPrices {
             input: $input,
             output: $output,
             cache_read: $cache_read,
-            cache_write: $cache_write,
         }
     };
 }
@@ -63,15 +61,15 @@ macro_rules! usd_prices {
 pub fn claude_usd(model: &str) -> Option<&'static UsdPrices> {
     let m = model.to_ascii_lowercase();
     if m.contains("opus") {
-        Some(&usd_prices![15.0, 75.0, 1.5, 18.75])
+        Some(&usd_prices![15.0, 75.0, 1.5])
     } else if m.contains("haiku") {
         if m.contains("3-5") {
-            Some(&usd_prices![0.8, 4.0, 0.1, 1.0])
+            Some(&usd_prices![0.8, 4.0, 0.1])
         } else {
-            Some(&usd_prices![1.0, 5.0, 0.1, 1.25])
+            Some(&usd_prices![1.0, 5.0, 0.1])
         }
     } else if m.contains("sonnet") {
-        Some(&usd_prices![3.0, 15.0, 0.3, 3.75])
+        Some(&usd_prices![3.0, 15.0, 0.3])
     } else {
         None
     }
@@ -119,6 +117,118 @@ fn num(v: &Value) -> f64 {
 
 fn token_of(usage: &Value, key: &str) -> f64 {
     num(usage.get(key).unwrap_or(&Value::Null))
+}
+
+/// 本地记账的单位价（CNY/百万 token，[空闲, 高峰] 两档）。
+#[derive(Debug, Clone, Copy)]
+pub struct UnitPrice {
+    pub hit: [f64; 2],
+    pub miss: [f64; 2],
+    pub out: [f64; 2],
+}
+
+/// 内置默认供应商表，反映常见事实：
+/// - bailian / tokenplan（百炼套餐制）→ 按量=false，不计入今日金额；
+/// - deepseek 官方、anthropic 官方 → 按量=true，用内置价目。
+pub fn default_providers() -> Vec<crate::config::ProviderCfg> {
+    use crate::config::{ModelPriceCfg, ProviderCfg};
+    vec![
+        ProviderCfg {
+            name: "bailian".into(),
+            metric: false,
+            models: vec![
+                ModelPriceCfg { pattern: "deepseek".into(), ppm: None },
+                ModelPriceCfg { pattern: "longcat".into(), ppm: None },
+                ModelPriceCfg { pattern: "qwen".into(), ppm: None },
+            ],
+        },
+        ProviderCfg {
+            name: "tokenplan".into(),
+            metric: false,
+            models: vec![],
+        },
+        ProviderCfg {
+            name: "deepseek".into(),
+            metric: true,
+            models: vec![],
+        },
+        ProviderCfg {
+            name: "anthropic".into(),
+            metric: true,
+            models: vec![],
+        },
+    ]
+}
+
+/// 内置价目（deepseek 官方 / claude / qwen），按价对象为单价表；未知返回 None。
+pub fn builtin_unit(model: &str) -> Option<UnitPrice> {
+    let m = model.to_ascii_lowercase();
+    if m.contains("deepseek") {
+        let p = price_for(model);
+        Some(UnitPrice { hit: p.hit, miss: p.miss, out: p.out })
+    } else if m.contains("claude") {
+        claude_usd(model).map(|p| UnitPrice {
+            hit: [p.cache_read * USD_TO_CNY; 2],
+            miss: [(p.input) * USD_TO_CNY; 2],
+            out: [p.output * USD_TO_CNY; 2],
+        })
+    } else if m.contains("qwen") {
+        qwen_cny(model).map(|p| UnitPrice {
+            hit: [p.hit; 2],
+            miss: [p.miss; 2],
+            out: [p.out; 2],
+        })
+    } else {
+        None
+    }
+}
+
+const ZERO_UNIT: UnitPrice = UnitPrice { hit: [0.0; 2], miss: [0.0; 2], out: [0.0; 2] };
+
+fn model_matches(patterns: &[crate::config::ModelPriceCfg], model: &str) -> bool {
+    let m = model.to_ascii_lowercase();
+    patterns.iter().any(|c| m.contains(&c.pattern.to_ascii_lowercase()))
+}
+
+/// 解析一笔本地用量应套用的单价。
+/// 返回 None = 套餐/订阅（非按量计费）或未配置模型 → 不计入今日金额。
+/// provider 为 opencode 的 providerID（无则 None，如 claude jsonl）。
+pub fn resolve_unit(
+    providers: &[crate::config::ProviderCfg],
+    model: &str,
+    provider: Option<&str>,
+) -> Option<UnitPrice> {
+    use crate::config::ProviderCfg;
+    // 1) 有 providerID：按供应商名精确匹配（opencode 数据）
+    if let Some(pid) = provider {
+        if let Some(p) = providers.iter().find(|p| p.name.eq_ignore_ascii_case(pid)) {
+            if !p.metric {
+                return None;
+            }
+            return Some(model_ppm(p, model).or_else(|| builtin_unit(model)).unwrap_or(ZERO_UNIT));
+        }
+    }
+    // 2) 无 providerID：全表按模型 pattern 匹配（claude jsonl 数据）
+    if let Some(p) = providers
+        .iter()
+        .find(|p: &&ProviderCfg| model_matches(&p.models, model))
+    {
+        if !p.metric {
+            return None;
+        }
+        return Some(model_ppm(p, model).or_else(|| builtin_unit(model)).unwrap_or(ZERO_UNIT));
+    }
+    // 3) 兜底：deepseek/claude/qwen 系仍按内置价目计（按量）；其余不计。
+    builtin_unit(model)
+}
+
+fn model_ppm(p: &crate::config::ProviderCfg, model: &str) -> Option<UnitPrice> {
+    let m = model.to_ascii_lowercase();
+    p.models
+        .iter()
+        .find(|c| m.contains(&c.pattern.to_ascii_lowercase()))
+        .and_then(|c| c.ppm)
+        .map(|ppm| UnitPrice { hit: [ppm; 2], miss: [ppm; 2], out: [ppm; 2] })
 }
 
 /// 平台用量响应 → (今日费用, 今日token数)。结构与 OLD JS computeTodayUsage 一致。
@@ -217,5 +327,33 @@ mod tests {
         // 空闲 0.05/百万 → 1M hit = 0.05 元
         assert!((cost - 0.05).abs() < 1e-9);
         assert!((tokens - 1_000_000.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn resolve_provider_flag() {
+        use crate::config::{ModelPriceCfg, ProviderCfg};
+        let plan = vec![ProviderCfg {
+            name: "bailian".into(),
+            metric: false, // 套餐制
+            models: vec![ModelPriceCfg { pattern: "deepseek".into(), ppm: None }],
+        }];
+        // bailian 的 deepseek：按供应商名匹配 → 套餐不计（None）。
+        assert!(resolve_unit(&plan, "deepseek-v4-flash-0731", Some("bailian")).is_none());
+        // 无 providerID 来源且模型命中套餐 pattern → 不计。
+        assert!(resolve_unit(&plan, "deepseek-v4-flash-0731", None).is_none());
+
+        let metric = vec![ProviderCfg {
+            name: "longcat".into(),
+            metric: true,
+            models: vec![ModelPriceCfg { pattern: "longcat".into(), ppm: Some(0.5) }],
+        }];
+        let u = resolve_unit(&metric, "LongCat-2.0", None).unwrap();
+        assert!((u.hit[0] - 0.5).abs() < 1e-9);
+
+        // 未配置的 deepseek 兜底走内置价目。
+        let u = resolve_unit(&[], "deepseek-v4-flash", None).unwrap();
+        assert!((u.miss[0] - 1.5).abs() < 1e-9);
+        // 完全未知模型不计。
+        assert!(resolve_unit(&[], "gpt-4o-x", None).is_none());
     }
 }

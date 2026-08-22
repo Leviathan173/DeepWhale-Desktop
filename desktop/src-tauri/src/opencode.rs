@@ -7,7 +7,8 @@ use serde_json::Value;
 use std::path::{Path, PathBuf};
 use time::PrimitiveDateTime;
 
-use crate::pricing::{is_peak_time, price_for};
+use crate::config::ProviderCfg;
+use crate::pricing::{is_peak_time, resolve_unit};
 
 /// opencode.db 定位：配置 `opencode_db` > 环境变量 OPENCODE_DATA_DIR > 默认路径。
 pub fn db_path(configured: Option<&str>) -> PathBuf {
@@ -44,14 +45,9 @@ pub(crate) fn today_start_ms() -> i64 {
         * 1000
 }
 
-/// 是否 DeepSeek 系模型（小鲸鱼只记为 DeepSeek 的开销，其他模型不算）。
-fn is_deepseek(model: &str) -> bool {
-    model.to_ascii_lowercase().contains("deepseek")
-}
-
 /// 累加「今天」所有消息的换算费用（CNY）与总 token 数。
 /// 读失败 / 没有数据返回 None，上层回退到余额差值记账。
-pub fn today_cost(db: &Path) -> Option<(f64, f64)> {
+pub fn today_cost(db: &Path, providers: &[ProviderCfg]) -> Option<(f64, f64)> {
     let conn = Connection::open_with_flags(
         db,
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
@@ -92,17 +88,18 @@ pub fn today_cost(db: &Path) -> Option<(f64, f64)> {
         let model = v
             .get("modelID")
             .and_then(|x| x.as_str())
-            .unwrap_or("deepseek-v4-flash");
-        if !is_deepseek(model) {
-            continue;
-        }
+            .unwrap_or("deepseek-v4-flash")
+            .to_string();
+        let provider = v.get("providerID").and_then(|x| x.as_str());
+        let Some(u) = resolve_unit(providers, &model, provider) else {
+            continue; // 套餐/未配置供应商：不计金额
+        };
         found = true;
-        let p = price_for(model);
         let pi = usize::from(is_peak_time(ts / 1000));
         total_tokens += n;
-        cost += (cached_read as f64) / 1e6 * p.hit[pi]
-            + (input as f64) / 1e6 * p.miss[pi]
-            + (output + reasoning) as f64 / 1e6 * p.out[pi];
+        cost += (cached_read as f64) / 1e6 * u.hit[pi]
+            + (input as f64) / 1e6 * u.miss[pi]
+            + (output + reasoning) as f64 / 1e6 * u.out[pi];
     }
     if found {
         Some((cost, total_tokens))
@@ -155,8 +152,14 @@ mod tests {
         let db = dir.join("opencode.db");
         let c = fixture(&db);
         let now = today_start_ms();
-        let p = price_for("deepseek-v4-flash-0731");
+        let p = crate::pricing::price_for("deepseek-v4-flash-0731");
         let pi = usize::from(is_peak_time(now / 1000));
+        // 只有 deepseek 官方按量供应商：无 providerID 的 deepseek 模型走内置价目。
+        let providers = vec![crate::config::ProviderCfg {
+            name: "deepseek".into(),
+            metric: true,
+            models: vec![],
+        }];
 
         insert(&c, "a", now, &msg("deepseek-v4-flash-0731", 1_000_000, 0, 0, 0));
         insert(&c, "b", now + 1, &msg("deepseek-v4-flash-0731", 0, 0, 0, 0));
@@ -164,7 +167,7 @@ mod tests {
         insert(&c, "g", now, &msg("gpt-4o", 999_999_999, 0, 0, 0));
         insert(&c, "d", now + 2, &msg("deepseek-v4-flash-0731", 0, 500_000, 200_000, 100_000));
 
-        let (cost, tokens) = today_cost(&db).unwrap();
+        let (cost, tokens) = today_cost(&db, &providers).unwrap();
         let expect = 1_000_000.0 / 1e6 * p.hit[pi]
             + 500_000.0 / 1e6 * p.miss[pi]
             + 300_000.0 / 1e6 * p.out[pi];
