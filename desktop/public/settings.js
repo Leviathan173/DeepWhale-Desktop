@@ -140,7 +140,8 @@
     del.type = 'button'
     del.className = 'del'
     del.textContent = '✕ 删除'
-    del.addEventListener('click', function () { box.remove() })
+    del.addEventListener('click', function () { box.remove(); buildNav() })
+    name.addEventListener('change', buildNav)
     title.append(lbl, name, radioButton('按量计费', true), radioButton('套餐·订阅制', false))
     var peakCb = document.createElement('input')
     peakCb.type = 'checkbox'
