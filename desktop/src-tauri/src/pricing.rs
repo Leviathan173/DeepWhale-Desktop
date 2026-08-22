@@ -246,18 +246,23 @@ fn model_unit(p: &crate::config::ProviderCfg, model: &str) -> Option<UnitPrice> 
     if !c.priced() {
         return None;
     }
-    // 每个类别：用户填了用用户值（峰谷供应商 ×2），留空回退内置价目的该档。
+    // 每个类别两组价：空闲=用户空闲值或内置空闲档；高峰=用户高峰值，未填时
+    // 峰谷供应商按空闲×2（老行为），非峰谷供应商与空闲同价；全空回退内置两档。
     let base = builtin_unit(model).unwrap_or(ZERO_UNIT);
-    let tier = |v: Option<f64>, builtin: [f64; 2]| match v {
-        Some(x) if p.peak => [x, x * 2.0],
-        Some(x) => [x, x],
-        None => builtin,
+    let tier = |off: Option<f64>, peak: Option<f64>, b: [f64; 2]| {
+        let offv = off.unwrap_or(b[0]);
+        let peakv = match peak {
+            Some(x) => x,
+            None if p.peak => off.map_or(b[1], |x| x * 2.0),
+            None => offv,
+        };
+        [offv, peakv]
     };
     Some(UnitPrice {
-        hit: tier(c.cache_read, base.hit),
-        miss: tier(c.input, base.miss),
-        out: tier(c.output, base.out),
-        create: tier(c.cache_creation, base.create),
+        hit: tier(c.cache_read, c.peak_cache_read, base.hit),
+        miss: tier(c.input, c.peak_input, base.miss),
+        out: tier(c.output, c.peak_output, base.out),
+        create: tier(c.cache_creation, c.peak_cache_creation, base.create),
         peak: p.peak,
     })
 }
@@ -386,13 +391,32 @@ mod tests {
                 output: Some(0.5),
                 cache_read: Some(0.5),
                 cache_creation: Some(0.5),
+                ..Default::default()
             }],
         }];
         // 精确全名才命中；泛化片段 "longcat" 不命中。
-        let u = resolve_unit(&metric, "LongCat-2.0", None).unwrap();
-        assert!((u.hit[0] - 0.5).abs() < 1e-9);
+        let u = resolve_unit(&metric, "longcat-2.0", None).unwrap();
+        assert!((u.miss[0] - 0.5).abs() < 1e-9);
         assert!((u.create[1] - 1.0).abs() < 1e-9); // 峰谷 ×2
         assert!(resolve_unit(&metric, "longcat-2.0-extra", None).is_none());
+
+        // 高峰显式填价：miss=[0.3,0.8]，其余类别回退内置。
+        let metric = vec![ProviderCfg {
+            name: "longcat".into(),
+            metric: true,
+            peak: true,
+            models: vec![ModelPriceCfg {
+                pattern: "deepseek-v4-flash".into(),
+                input: Some(0.3),
+                peak_input: Some(0.8),
+                ..Default::default()
+            }],
+        }];
+        let u = resolve_unit(&metric, "deepseek-v4-flash", None).unwrap();
+        assert!((u.miss[0] - 0.3).abs() < 1e-9);
+        assert!((u.miss[1] - 0.8).abs() < 1e-9);
+        // output 未填 → 内置高峰档
+        assert!((u.out[1] - 9.0).abs() < 1e-9);
 
         // 只填 input 时，其余类别回退内置价目。
         let metric = vec![ProviderCfg {

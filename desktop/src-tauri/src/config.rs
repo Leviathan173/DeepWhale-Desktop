@@ -14,12 +14,12 @@ pub fn normalize(m: &str) -> &'static str {
 }
 
 /// 单个模型的计价项（本地记账用）。
-/// pattern 对模型名做精确全名匹配；四类单价（CNY/百万 token，None → 该项用内置价目）：
-/// input 普通输入、output 输出、cache_read 缓存读取/命中、cache_creation 缓存创建。
+/// pattern 对模型名做精确全名匹配。单价 = 元/百万 token：
+/// 普通四类 + 高峰四类（peak_*）。None → 该项用内置价目。
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ModelPriceCfg {
     pub pattern: String,
-    /// 未填的类别不落盘（省略 = 该类别用内置价目）。
+    /// 空闲价（非峰谷则同时用作高峰档）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -28,6 +28,15 @@ pub struct ModelPriceCfg {
     pub cache_read: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_creation: Option<f64>,
+    /// 高峰价（仅峰谷供应商生效）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peak_input: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peak_output: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peak_cache_read: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peak_cache_creation: Option<f64>,
 }
 
 impl ModelPriceCfg {
@@ -37,6 +46,10 @@ impl ModelPriceCfg {
             || self.output.is_some()
             || self.cache_read.is_some()
             || self.cache_creation.is_some()
+            || self.peak_input.is_some()
+            || self.peak_output.is_some()
+            || self.peak_cache_read.is_some()
+            || self.peak_cache_creation.is_some()
     }
 }
 

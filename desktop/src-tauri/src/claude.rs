@@ -202,6 +202,7 @@ mod tests {
                     output: Some(0.5),
                     cache_read: Some(0.5),
                     cache_creation: Some(0.5),
+                    ..Default::default()
                 },
             ],
         }];

@@ -71,29 +71,23 @@
     setTimeout(function () { pricestatus.textContent = '' }, 2500)
   }
 
-  /// 模型单价四类（元/百万 token），留空=该类别用内置价目。
-  var PRICE_FIELDS = [
-    ['input', '输入'],
-    ['output', '输出'],
-    ['cache_read', '缓存读取'],
-    ['cache_creation', '缓存创建']
-  ]
+  /// 模型单价四类（元/百万 token），值留空=该类别用内置价目。
+  var PRICE_FIELDS = ['input', 'output', 'cache_read', 'cache_creation']
 
-  function priceCell(field, m) {
-    var td = document.createElement('td')
+  function priceInput(field, tier, m) {
     var inp = document.createElement('input')
     inp.type = 'number'
     inp.min = '0'
     inp.step = '0.01'
     inp.placeholder = '无内置'
-    if (m && m[field] != null) inp.value = m[field]
+    var src = m ? (tier === 'peak' ? m['peak_' + field] : m[field]) : null
+    if (src != null) inp.value = src
     // 用户手动改动 → 视为自定义（去掉内置标记，才会被保存）
     inp.addEventListener('input', function () {
       if (inp.value !== '') { inp.classList.remove('auto'); inp.classList.remove('auto-fill') }
       else inp.classList.remove('auto-fill')
     })
-    td.appendChild(inp)
-    return { key: field, el: td, input: inp }
+    return inp
   }
 
   /// 覆盖/标记某格为「内置价目」填充（灰显、保存时跳过）。
@@ -105,50 +99,84 @@
     }
   }
 
-  /// 模型留空项自动填入内置价目（异步）。
-  function fillBuiltin(tr) {
-    var pat = tr.querySelector('input[type=text]').value.trim().toLowerCase()
-    var inputs = tr._priceInputs || {}
+  /// 按内置价目回填一行模型（空闲/峰谷两档；非峰谷只填空闲行）。
+  function refill(grp, peak) {
+    var pat = grp.patInput.value.trim().toLowerCase()
     if (!pat) return
     TAPI.invoke('builtin_prices', { model: pat }).then(function (r) {
       PRICE_FIELDS.forEach(function (f) {
-        markAuto(inputs[f[0]], r == null ? null : r[f[0]])
+        var b = r == null ? null : r[f]
+        markAuto(grp.inputs[f].off, b == null ? null : b[0])
+        if (peak) markAuto(grp.inputs[f].peak, b == null ? null : b[1])
       })
     }).catch(function () {})
   }
 
-  function modelRow(m) {
-    var tr = document.createElement('tr')
+  /// 一个模型 = 上下两行（空闲/高峰）。非峰谷供应商的高峰行隐藏（display:none）。
+  /// 返回 [off 行, peak 行]。
+  function modelRows(m, peak) {
+    var grp = { inputs: {} }
+    var off = document.createElement('tr')
+    off.className = 'moff'
+    var pk = document.createElement('tr')
+    pk.className = 'mpeak' + (peak ? '' : ' hidden')
+
     var tdPat = document.createElement('td')
     var pat = document.createElement('input')
     pat.type = 'text'
     pat.placeholder = '模型全名，如 deepseek-v4-flash'
     if (m && m.pattern) pat.value = m.pattern
     tdPat.appendChild(pat)
-    var cells = PRICE_FIELDS.map(function (f) { return priceCell(f[0], m) })
+    tdPat.rowSpan = 2
+
     var tdDel = document.createElement('td')
     var del = document.createElement('button')
     del.type = 'button'
     del.className = 'del'
     del.textContent = '✕'
-    del.addEventListener('click', function () { tr.remove(); scheduleProvSave() })
+    del.addEventListener('click', function () { off.remove(); pk.remove(); scheduleProvSave() })
     tdDel.appendChild(del)
-    tr.append(tdPat)
-    cells.forEach(function (c) { tr.appendChild(c.el) })
-    tr.appendChild(tdDel)
-    tr._priceInputs = {}
-    cells.forEach(function (c) { tr._priceInputs[c.key] = c.input })
-    // 改名后清空单价并按新模型重新填入内置价目
-    pat.addEventListener('change', function () {
-      PRICE_FIELDS.forEach(function (f) {
-        var inp = tr._priceInputs[f[0]]
-        inp.value = ''
-        inp.classList.remove('auto', 'auto-fill')
-      })
-      fillBuiltin(tr)
+    tdDel.rowSpan = 2
+
+    var tierCell = function (label) {
+      var td = document.createElement('td')
+      td.className = 'tier'
+      td.textContent = label
+      return td
+    }
+
+    off.appendChild(tdPat)
+    off.appendChild(tierCell('空闲'))
+    PRICE_FIELDS.forEach(function (f) {
+      var inp = priceInput(f, 'off', m)
+      grp.inputs[f] = { off: inp }
+      var td = document.createElement('td')
+      td.appendChild(inp)
+      off.appendChild(td)
     })
-    if (m && m.pattern) fillBuiltin(tr)
-    return tr
+    off.appendChild(tdDel)
+
+    pk.appendChild(tierCell('高峰'))
+    PRICE_FIELDS.forEach(function (f) {
+      var inp = priceInput(f, 'peak', m)
+      grp.inputs[f].peak = inp
+      var td = document.createElement('td')
+      td.appendChild(inp)
+      pk.appendChild(td)
+    })
+
+    grp.patInput = pat
+    off._grp = pk._grp = grp
+    // 改名后重填内置价目
+    pat.addEventListener('change', function () { refill(grp, peak) })
+    if (m && m.pattern) refill(grp, peak)
+    return [off, pk]
+  }
+
+  /// 峰谷开关切换：显示/隐藏高峰行并回填。
+  function applyPeakMode(box, peak) {
+    box.querySelectorAll('tr.mpeak').forEach(function (tr) { tr.classList.toggle('hidden', !peak) })
+    box.querySelectorAll('tr.moff').forEach(function (tr) { if (tr._grp) refill(tr._grp, peak) })
   }
 
   /// 按计费模式切换整个卡片可用态：套餐下模型区置灰并提示。
@@ -199,6 +227,7 @@
     var peakCb = document.createElement('input')
     peakCb.type = 'checkbox'
     peakCb.checked = !data || data.peak !== false
+    peakCb.addEventListener('change', function () { applyPeakMode(box, peakCb.checked) })
     var peakLbl = document.createElement('label')
     peakLbl.className = 'bill peak-lbl'
     peakLbl.appendChild(peakCb)
@@ -212,22 +241,29 @@
     table.className = 'mini'
     var thead = document.createElement('thead')
     var hr0 = document.createElement('tr')
-    hr0.innerHTML = '<th>模型（精确全名）</th><th>输入</th><th>输出</th><th>缓存读取</th><th>缓存创建</th><th></th>'
+    hr0.innerHTML = '<th>档位</th><th>模型（精确全名）</th><th>输入</th><th>输出</th><th>缓存读取</th><th>缓存创建</th><th></th>'
     thead.appendChild(hr0)
     var tbody = document.createElement('tbody')
     table.append(thead, tbody)
     models.appendChild(table)
+    var peak = !data || data.peak !== false
+    // 一行模型 = 空闲/高峰两行
     var addRowBtn = document.createElement('button')
     addRowBtn.type = 'button'
     addRowBtn.className = 'tiny models-add'
     addRowBtn.textContent = '+ 添加模型'
-    addRowBtn.addEventListener('click', function () { tbody.appendChild(modelRow(null)); scheduleProvSave() })
+    addRowBtn.addEventListener('click', function () {
+      modelRows(null, peak).forEach(function (tr) { tbody.appendChild(tr) })
+      scheduleProvSave()
+    })
     var note = document.createElement('div')
     note.className = 'prov-note'
 
     box.append(title, models, addRowBtn, note)
     applyBillMode(box, metric)
-    if (data && data.models) data.models.forEach(function (m) { tbody.appendChild(modelRow(m)) })
+    if (data && data.models) data.models.forEach(function (m) {
+      modelRows(m, peak).forEach(function (tr) { tbody.appendChild(tr) })
+    })
     pricingBox.appendChild(box)
   }
 
@@ -273,14 +309,17 @@
       if (!name) return
       var metric = prov.querySelector(':scope > .prov-title input[type=radio]').checked
       var models = []
-      prov.querySelectorAll('tbody tr').forEach(function (tr) {
-        var pattern = tr.querySelector(':scope input[type=text]').value.trim()
+      prov.querySelectorAll('tbody tr.moff').forEach(function (tr) {
+        var grp = tr._grp
+        var pattern = grp.patInput.value.trim()
         if (!pattern) return
         var rec = { pattern: pattern }
         PRICE_FIELDS.forEach(function (f) {
-          var v = (tr._priceInputs || {})[f[0]]
+          var off = grp.inputs[f].off
+          var pk = grp.inputs[f].peak
           // 灰显的内置价目仅是展示、不落盘（定价仍走内置表）
-          if (v && v.classList && !v.classList.contains('auto-fill') && v.value !== '') rec[f[0]] = parseFloat(v.value)
+          if (!off.classList.contains('auto-fill') && off.value !== '') rec[f] = parseFloat(off.value)
+          if (!pk.classList.contains('auto-fill') && pk.value !== '') rec['peak_' + f] = parseFloat(pk.value)
         })
         models.push(rec)
       })
