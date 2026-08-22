@@ -52,6 +52,54 @@
     setTimeout(function () { status.textContent = '' }, 2500)
   }
 
+  // ---- 余额/花费通知阈值 ----
+  var notifyEls = {
+    dsHourlyLimit: document.getElementById('ds-hourly-limit'),
+    dsMinBalance: document.getElementById('ds-min-balance'),
+    blHourlyPct: document.getElementById('bl-hourly-pct'),
+    blRemainingPct: document.getElementById('bl-remaining-pct')
+  }
+  var notifyStatus = document.getElementById('notifystatus')
+  var notifyBtn = document.getElementById('savenotify')
+  var notifyMsgSeq = 0
+  function notifyMsg(t, err) {
+    var seq = ++notifyMsgSeq
+    if (!notifyStatus) return
+    notifyStatus.style.color = err ? '#e0433f' : '#2fa24c'
+    notifyStatus.textContent = t
+    setTimeout(function () { if (seq === notifyMsgSeq) notifyStatus.textContent = '' }, 2500)
+  }
+  function notifyPayload() {
+    // 空输入 = None（关闭通知）；number 输入自带 NaN 兜底
+    var out = {}
+    Object.keys(notifyEls).forEach(function (k) {
+      var el = notifyEls[k]
+      var v = el ? parseFloat(el.value) : NaN
+      out[k] = isFinite(v) && v > 0 ? v : null
+    })
+    return out
+  }
+  function fillNotify(payload) {
+    if (!payload) return
+    Object.keys(notifyEls).forEach(function (k) {
+      var el = notifyEls[k]
+      var v = payload[k]
+      if (el && v != null && isFinite(Number(v))) el.value = v
+    })
+  }
+  if (notifyBtn) {
+    notifyBtn.addEventListener('click', function () {
+      notifyMsg('正在保存…')
+      TAPI.invoke('set_notify_prefs', notifyPayload()).then(function () {
+        notifyMsg('通知设置已保存')
+        refreshBalance()
+      }).catch(function () { notifyMsg('保存失败', true) })
+    })
+  }
+  TAPI.invoke('get_config')
+    .then(function (cfg) { if (cfg) fillNotify(cfg) })
+    .catch(function () {})
+
   var tokMsgSeq = 0
   function tokMsg(t, err) {
     var seq = ++tokMsgSeq
@@ -395,6 +443,7 @@
     title('设置')
     link('凭据设置', 'sec-creds')
     link('百炼令牌套餐', 'sec-bailian')
+    link('余额/花费通知', 'sec-notify')
     link('用量计价', 'sec-pricing')
     var boxCount = pricingBox.querySelectorAll('.prov').length
     if (boxCount > 0) {

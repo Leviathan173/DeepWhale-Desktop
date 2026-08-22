@@ -3,7 +3,7 @@ use std::time::Duration;
 use time::format_description::well_known::Rfc3339;
 
 use crate::app_state::{AppState, BalanceCache};
-use crate::{claude, config, ledger, opencode, pricing};
+use crate::{claude, config, opencode, pricing};
 use serde_json::{json, Value};
 
 pub const BALANCE_URL: &str = "https://api.deepseek.com/user/balance";
@@ -278,8 +278,6 @@ pub async fn get_balance_payload(state: &AppState) -> Value {
         }
     };
 
-    // 无论哪种模式都先把余额观测记入账本
-    let led = ledger::record_usage(&state.dir, total);
     let mut payload = json!({
         "ok": true,
         "totalBalance": total,
@@ -288,31 +286,15 @@ pub async fn get_balance_payload(state: &AppState) -> Value {
         "updatedAt": now_iso(),
     });
 
-    let mode = config::normalize(&cfg.usage_mode);
-    if mode == "token" {
-        if let Some(token) = cfg.platform_token.clone() {
-            match fetch_today_usage(&state.client, &token).await {
-                Ok(cost) => {
-                    payload["todayUsage"] = json!(cost);
-                    payload["usageMode"] = json!("token");
-                }
-                Err(_) => {
-                    payload["todayUsage"] = json!(led.today_usage);
-                    payload["usageMode"] = json!("ledger");
-                }
-            }
-        } else {
-            payload["todayUsage"] = json!(led.today_usage);
-            payload["usageMode"] = json!("ledger");
-        }
-    } else if mode == "opencode" {
+    // 小鲸鱼记账（本地会话）：opencode.db + Claude Code jsonl 叠加，按计价表算今日金额。
+    // 读不到 → None（前端显示 --）。不再有余额差回退。
+    fn local_usage(cfg: &config::AppConfig) -> Option<f64> {
         let db = opencode::db_path(cfg.opencode_db.as_deref());
         let providers = cfg
             .usage_providers
             .clone()
             .unwrap_or_else(pricing::default_providers);
-        // 本地总账：opencode.db + Claude Code jsonl 叠加；两者都读不到才回退 ledger。
-        let cost = match (
+        match (
             opencode::today_cost(&db, &providers),
             claude::today_cost(None, &providers),
         ) {
@@ -320,20 +302,38 @@ pub async fn get_balance_payload(state: &AppState) -> Value {
             (Some((a, _)), None) => Some(a),
             (None, Some((b, _))) => Some(b),
             (None, None) => None,
-        };
-        match cost {
-            Some(c) => {
-                payload["todayUsage"] = json!(c);
-                payload["usageMode"] = json!("opencode");
-            }
-            None => {
-                payload["todayUsage"] = json!(led.today_usage);
-                payload["usageMode"] = json!("ledger");
-            }
+        }
+    }
+
+    // 实时·令牌（默认）：有令牌且抓取成功才用实时值；无令牌/失败 → 回退小鲸鱼记账。
+    let realtime = if config::normalize(&cfg.usage_mode) == "token" {
+        match cfg.platform_token.as_deref() {
+            Some(token) => match fetch_today_usage(&state.client, token).await {
+                Ok(cost) => {
+                    payload["todayUsage"] = json!(cost);
+                    payload["usageMode"] = json!("token");
+                    true
+                }
+                Err(e) => {
+                    eprintln!("[balance] 令牌用量抓取失败，回退小鲸鱼记账: {e}");
+                    false
+                }
+            },
+            None => false,
         }
     } else {
-        payload["todayUsage"] = json!(led.today_usage);
-        payload["usageMode"] = json!("ledger");
+        false
+    };
+    if !realtime {
+        // local_usage 做阻塞式 SQLite/文件读取（opencode.db + Claude jsonl），挪出 async 执行器
+        match tokio::task::spawn_blocking(move || local_usage(&cfg)).await {
+            Ok(Some(cost)) => {
+                payload["todayUsage"] = json!(cost);
+                payload["usageMode"] = json!("opencode");
+            }
+            Ok(None) => {}
+            Err(e) => eprintln!("[balance] 本地记账任务失败: {e}"),
+        }
     }
 
     // 百炼 TokenPlan（订阅制），收并发任务的尾。

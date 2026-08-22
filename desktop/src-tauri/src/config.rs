@@ -6,10 +6,8 @@ use std::path::Path;
 pub fn normalize(m: &str) -> &'static str {
     if m == "token" {
         "token"
-    } else if m == "opencode" {
-        "opencode"
     } else {
-        "ledger"
+        "opencode"
     }
 }
 
@@ -95,6 +93,24 @@ pub struct AppConfig {
     /// 小鲸鱼当前展示的供应商（deepseek/bailian）。
     #[serde(default = "default_provider")]
     pub provider: String,
+    /// 通知阈值。None/≤0 = 关闭该项通知。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ds_hourly_limit: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ds_min_balance: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bl_hourly_pct: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bl_remaining_pct: Option<f64>,
+}
+
+fn positive(v: Option<f64>) -> Option<f64> {
+    v.filter(|x| x.is_finite() && *x > 0.0)
+}
+
+/// 百分比阈值额外限制在 0..=100（百炼字段）。
+fn positive_pct(v: Option<f64>) -> Option<f64> {
+    v.filter(|x| x.is_finite() && *x > 0.0 && *x <= 100.0)
 }
 
 fn default_provider() -> String {
@@ -108,7 +124,7 @@ impl Default for AppConfig {
             sound: true,
             vol: 0.9,
             sound_set: "duck".to_string(),
-            usage_mode: "ledger".to_string(),
+            usage_mode: "token".to_string(),
             api_key: None,
             platform_token: None,
             bailian_cookie: None,
@@ -116,6 +132,10 @@ impl Default for AppConfig {
             opencode_db: None,
             usage_providers: None,
             provider: default_provider(),
+            ds_hourly_limit: None,
+            ds_min_balance: None,
+            bl_hourly_pct: None,
+            bl_remaining_pct: None,
         }
     }
 }
@@ -223,4 +243,67 @@ pub fn write_provider(dir: &Path, provider: &str) {
         "deepseek".to_string()
     };
     write_file(dir, &cfg.normalized());
+}
+
+/// 只改通知阈值。None/≤0 → 关闭该项通知（不改其他配置）。
+pub fn write_notify_prefs(
+    dir: &Path,
+    ds_hourly_limit: Option<f64>,
+    ds_min_balance: Option<f64>,
+    bl_hourly_pct: Option<f64>,
+    bl_remaining_pct: Option<f64>,
+) {
+    let mut cfg = read(dir);
+    cfg.ds_hourly_limit = positive(ds_hourly_limit);
+    cfg.ds_min_balance = positive(ds_min_balance);
+    cfg.bl_hourly_pct = positive_pct(bl_hourly_pct);
+    cfg.bl_remaining_pct = positive_pct(bl_remaining_pct);
+    write_file(dir, &cfg.normalized());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tmp_dir(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(name);
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn notify_prefs_roundtrip_and_positive_only() {
+        let dir = tmp_dir("dshw-config-notify-test");
+        write_notify_prefs(&dir, None, None, None, None);
+        assert!(read(&dir).ds_hourly_limit.is_none());
+
+        // 有效正数保存，0 / 负数 / NaN 归一为 None；百分比 >100 也归一
+        write_notify_prefs(&dir, Some(20.0), Some(0.0), Some(-1.0), Some(150.0));
+        let c = read(&dir);
+        assert_eq!(c.ds_hourly_limit, Some(20.0));
+        assert!(c.ds_min_balance.is_none());
+        assert!(c.bl_hourly_pct.is_none());
+        assert!(c.bl_remaining_pct.is_none());
+
+        write_notify_prefs(&dir, None, None, Some(50.0), Some(100.0));
+        let c = read(&dir);
+        assert_eq!(c.bl_hourly_pct, Some(50.0));
+        assert_eq!(c.bl_remaining_pct, Some(100.0));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn notify_prefs_preserve_other_fields() {
+        let dir = tmp_dir("dshw-config-notify-test2");
+        write_prefs(&dir, 1.7, true, 0.6, "fx1", "token", "/tmp/x.db");
+        write_notify_prefs(&dir, None, Some(5.0), Some(50.0), Some(30.0));
+        let c = read(&dir);
+        assert_eq!(c.scale, 1.7);
+        assert_eq!(c.usage_mode, "token");
+        assert_eq!(c.bl_remaining_pct, Some(30.0));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
 }
