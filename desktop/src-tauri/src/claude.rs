@@ -181,7 +181,7 @@ mod tests {
             format!(r#"{{"type":"mode","mode":"plan","timestamp":"{today}"}}"#),
             format!(r#"{{"type":"assistant","timestamp":"{today}","message":{{"model":"deepseek-v4-flash","usage":{{"input_tokens":1000000,"output_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}}}}"#),
             format!(r#"{{"type":"assistant","timestamp":"{today}","message":{{"model":"LongCat-2.0","usage":{{"input_tokens":0,"output_tokens":0,"cache_read_input_tokens":2000000,"cache_creation_input_tokens":0}}}}}}"#),
-            format!(r#"{{"type":"assistant","timestamp":"1999-01-01T00:00:00Z","message":{{"model":"deepseek-v4-flash","usage":{{"input_tokens":999999999,"output_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}}}}"#),
+            r#"{"type":"assistant","timestamp":"1999-01-01T00:00:00Z","message":{"model":"deepseek-v4-flash","usage":{"input_tokens":999999999,"output_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}"#.to_string(),
         ];
         fs::write(&f, lines.join("\n")).unwrap();
 

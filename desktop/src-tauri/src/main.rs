@@ -320,6 +320,9 @@ fn auto_discover_pricing(app: tauri::AppHandle) -> Value {
     for p in &mut providers {
         p.models.retain(|m| m.ppm.is_some() || known.contains(&m.pattern.to_ascii_lowercase()));
     }
+    // 丢弃没有任何模型的空供应商（纯配置残留，如旧版 tokenplan/anthropic），
+    // 空的也匹配不到任何事件，留在表里只是噪音。
+    providers.retain(|p| !p.models.is_empty());
 
     // 各供应商 API Key：opencode auth.json + 配置 + claude settings env，去重。
     let mut keys = std::collections::BTreeMap::new();
