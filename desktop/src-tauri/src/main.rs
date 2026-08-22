@@ -152,7 +152,7 @@ fn open_settings_window(app: &tauri::AppHandle) -> tauri::Result<()> {
         tauri::WebviewUrl::App("settings.html".into()),
     )
     .title("设置 API Key")
-    .inner_size(620.0, 640.0)
+    .inner_size(1240.0, 640.0)
     .min_inner_size(460.0, 420.0)
     .resizable(true)
     .center()
