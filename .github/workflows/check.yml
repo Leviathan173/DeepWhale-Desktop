@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - 'desktop/**'
+      - '*.md'
       - '.github/workflows/check.yml'
   workflow_dispatch:
 
