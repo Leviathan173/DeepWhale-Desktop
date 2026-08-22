@@ -33,10 +33,14 @@
     })
   }
 
+  var hadKey = null
+  var hadToken = null
+
   document.getElementById('save').addEventListener('click', function () {
     TAPI.invoke('save_credentials', {
-      apiKey: (apiEl.value || '').trim() || null,
-      platformToken: (tokEl.value || '').trim() || null
+      // 输入框留空 = 保留已保存的值；只有改填新值才覆盖（防止误清空又得重新获取）。
+      apiKey: (apiEl.value || '').trim() || hadKey,
+      platformToken: (tokEl.value || '').trim() || hadToken
     }).then(function () {
       msg('已保存')
       // 让主窗口立即刷新余额（L8: 换 key 后不用等 60s）
@@ -47,16 +51,20 @@
     }).catch(function () { msg('保存失败') })
   })
 
+  function loadedCreds(c) {
+    if (c) {
+      if (c.apiKey) { apiEl.value = c.apiKey; hadKey = c.apiKey }
+      if (c.platformToken) { tokEl.value = c.platformToken; hadToken = c.platformToken }
+    }
+  }
   TAPI.invoke('load_credentials')
-    .then(function (c) {
-      if (c && c.apiKey) apiEl.value = c.apiKey
-      if (c && c.platformToken) tokEl.value = c.platformToken
-    })
+    .then(loadedCreds)
     .catch(function () {})
 
-  // ---- 用量计价表编辑 ----
+  // ---- 用量计价表编辑：以提供商为粒度的卡片 ----
   var pricingBox = document.getElementById('pricing')
   var pricestatus = document.getElementById('pricestatus')
+  var provSeq = 0
 
   function pricingMsg(t) {
     pricestatus.textContent = t
@@ -65,23 +73,20 @@
 
   function modelRow(m) {
     var tr = document.createElement('tr')
-
     var tdPat = document.createElement('td')
     var pat = document.createElement('input')
     pat.type = 'text'
-    pat.placeholder = '模型名片段，如 deepseek'
+    pat.placeholder = 'deepseek / longcat…'
     if (m && m.pattern) pat.value = m.pattern
     tdPat.appendChild(pat)
-
     var tdPpm = document.createElement('td')
     var ppm = document.createElement('input')
     ppm.type = 'number'
     ppm.min = '0'
     ppm.step = '0.01'
-    ppm.placeholder = '元/百万 (留空=内置)'
+    ppm.placeholder = '留空=内置价目'
     if (m && m.ppm != null) ppm.value = m.ppm
     tdPpm.appendChild(ppm)
-
     var tdDel = document.createElement('td')
     var del = document.createElement('button')
     del.type = 'button'
@@ -89,47 +94,75 @@
     del.textContent = '✕'
     del.addEventListener('click', function () { tr.remove() })
     tdDel.appendChild(del)
-
     tr.append(tdPat, tdPpm, tdDel)
     return tr
+  }
+
+  /// 按计费模式切换整个卡片可用态：套餐下模型区置灰并提示。
+  function applyBillMode(box, metric) {
+    box.classList.toggle('disabled', !metric)
+    var note = box.querySelector('.prov-note')
+    if (!note) return
+    note.textContent = metric ? '' : '套餐（订阅制）：不计入今日金额，模型单价不生效。'
   }
 
   function addProv(data) {
     var box = document.createElement('div')
     box.className = 'prov'
 
-    var head = document.createElement('div')
-    head.className = 'prov-head'
+    // 标题行：提供商名 + 计费模式单选 + 删除
+    var title = document.createElement('div')
+    title.className = 'prov-title'
+    var lbl = document.createElement('span')
+    lbl.className = 'lbl'
+    lbl.textContent = '提供商'
     var name = document.createElement('input')
     name.type = 'text'
-    name.placeholder = '供应商名（deepseek / bailian / LongCat…）'
+    name.placeholder = 'deepseek / bailian / LongCat…'
     if (data && data.name) name.value = data.name
-    var metric = document.createElement('input')
-    metric.type = 'checkbox'
-    if (!data || data.metric !== false) metric.checked = true
-    var mlbl = document.createElement('label')
-    mlbl.appendChild(metric)
-    mlbl.append('按量计费')
+    var group = 'bill-' + (provSeq++)
+    var metric = !(data && data.metric === false)
+    var radioButton = function (text, isMetric) {
+      var b = document.createElement('input')
+      b.type = 'radio'
+      b.name = group
+      if (isMetric === metric) b.checked = true
+      b.addEventListener('change', function () { applyBillMode(box, isMetric) })
+      var lb = document.createElement('label')
+      lb.className = 'bill'
+      lb.appendChild(b)
+      lb.appendChild(document.createTextNode(text))
+      return lb
+    }
     var del = document.createElement('button')
     del.type = 'button'
     del.className = 'del'
-    del.textContent = '✕'
+    del.textContent = '✕ 删除'
     del.addEventListener('click', function () { box.remove() })
-    head.append(name, mlbl, del)
+    title.append(lbl, name, radioButton('按量计费', true), radioButton('套餐·订阅制', false), del)
 
+    // 模型区
+    var models = document.createElement('div')
+    models.className = 'prov-models'
     var table = document.createElement('table')
     table.className = 'mini'
+    var thead = document.createElement('thead')
+    var hr0 = document.createElement('tr')
+    hr0.innerHTML = '<th>模型（名字匹配）</th><th>单价 元/百万 token</th><th></th>'
+    thead.appendChild(hr0)
     var tbody = document.createElement('tbody')
-    table.appendChild(tbody)
-    box.append(head, table)
-
+    table.append(thead, tbody)
+    models.appendChild(table)
     var addRowBtn = document.createElement('button')
     addRowBtn.type = 'button'
-    addRowBtn.className = 'tiny'
-    addRowBtn.textContent = '+ 模型'
+    addRowBtn.className = 'tiny models-add'
+    addRowBtn.textContent = '+ 添加模型'
     addRowBtn.addEventListener('click', function () { tbody.appendChild(modelRow(null)) })
-    box.appendChild(addRowBtn)
+    var note = document.createElement('div')
+    note.className = 'prov-note'
 
+    box.append(title, models, addRowBtn, note)
+    applyBillMode(box, metric)
     if (data && data.models) data.models.forEach(function (m) { tbody.appendChild(modelRow(m)) })
     pricingBox.appendChild(box)
   }
@@ -137,9 +170,9 @@
   function collectProviders() {
     var out = []
     pricingBox.querySelectorAll('.prov').forEach(function (prov) {
-      var name = prov.querySelector(':scope > .prov-head input[type=text]').value.trim()
+      var name = prov.querySelector(':scope > .prov-title input[type=text]').value.trim()
       if (!name) return
-      var metric = prov.querySelector(':scope > .prov-head input[type=checkbox]').checked
+      var metric = prov.querySelector(':scope > .prov-title input[type=radio]').checked
       var models = []
       prov.querySelectorAll('tbody tr').forEach(function (tr) {
         var pattern = tr.querySelector('input[type=text]').value.trim()
