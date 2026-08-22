@@ -85,10 +85,36 @@
     inp.type = 'number'
     inp.min = '0'
     inp.step = '0.01'
-    inp.placeholder = '留空=内置'
+    inp.placeholder = '无内置'
     if (m && m[field] != null) inp.value = m[field]
+    // 用户手动改动 → 视为自定义（去掉内置标记，才会被保存）
+    inp.addEventListener('input', function () {
+      if (inp.value !== '') { inp.classList.remove('auto'); inp.classList.remove('auto-fill') }
+      else inp.classList.remove('auto-fill')
+    })
     td.appendChild(inp)
     return { key: field, el: td, input: inp }
+  }
+
+  /// 覆盖/标记某格为「内置价目」填充（灰显、保存时跳过）。
+  function markAuto(inp, v) {
+    if (inp.classList.contains('auto-fill')) return // 用户已手动改过，不覆盖
+    if (inp.value === '' || inp.classList.contains('auto')) {
+      inp.classList.add('auto', 'auto-fill')
+      inp.value = v == null ? '' : v
+    }
+  }
+
+  /// 模型留空项自动填入内置价目（异步）。
+  function fillBuiltin(tr) {
+    var pat = tr.querySelector('input[type=text]').value.trim().toLowerCase()
+    var inputs = tr._priceInputs || {}
+    if (!pat) return
+    TAPI.invoke('builtin_prices', { model: pat }).then(function (r) {
+      PRICE_FIELDS.forEach(function (f) {
+        markAuto(inputs[f[0]], r == null ? null : r[f[0]])
+      })
+    }).catch(function () {})
   }
 
   function modelRow(m) {
@@ -112,6 +138,16 @@
     tr.appendChild(tdDel)
     tr._priceInputs = {}
     cells.forEach(function (c) { tr._priceInputs[c.key] = c.input })
+    // 改名后清空单价并按新模型重新填入内置价目
+    pat.addEventListener('change', function () {
+      PRICE_FIELDS.forEach(function (f) {
+        var inp = tr._priceInputs[f[0]]
+        inp.value = ''
+        inp.classList.remove('auto', 'auto-fill')
+      })
+      fillBuiltin(tr)
+    })
+    if (m && m.pattern) fillBuiltin(tr)
     return tr
   }
 
@@ -243,7 +279,8 @@
         var rec = { pattern: pattern }
         PRICE_FIELDS.forEach(function (f) {
           var v = (tr._priceInputs || {})[f[0]]
-          if (v && v.value !== '') rec[f[0]] = parseFloat(v.value)
+          // 灰显的内置价目仅是展示、不落盘（定价仍走内置表）
+          if (v && v.classList && !v.classList.contains('auto-fill') && v.value !== '') rec[f[0]] = parseFloat(v.value)
         })
         models.push(rec)
       })

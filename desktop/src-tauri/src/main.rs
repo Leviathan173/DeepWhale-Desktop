@@ -50,6 +50,7 @@ fn main() {
             get_usage_providers,
             set_usage_providers,
             auto_discover_pricing,
+            builtin_prices,
             open_settings,
             capture_login_token,
             image_data_url,
@@ -337,6 +338,22 @@ fn auto_discover_pricing(app: tauri::AppHandle) -> Value {
         .map(|(k, v)| (k, json!(v)))
         .collect();
     json!({ "providers": providers, "apiKeys": keys })
+}
+
+/// 某模型的内置价目（CNY/百万 token 空闲档，供设置页留空时自动填入展示）。
+/// 无内置 → null。仅展示用；填入的「内置」值不落盘，定价仍走 builtin_unit。
+#[tauri::command]
+fn builtin_prices(model: String) -> Value {
+    use crate::pricing::builtin_unit;
+    match builtin_unit(&model) {
+        Some(u) => json!({
+            "input": u.miss[0],
+            "output": u.out[0],
+            "cache_read": u.hit[0],
+            "cache_creation": u.create[0],
+        }),
+        None => Value::Null,
+    }
 }
 
 #[tauri::command]
