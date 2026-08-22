@@ -145,8 +145,8 @@
       return td
     }
 
-    off.appendChild(tdPat)
     off.appendChild(tierCell('空闲'))
+    off.appendChild(tdPat)
     PRICE_FIELDS.forEach(function (f) {
       var inp = priceInput(f, 'off', m)
       grp.inputs[f] = { off: inp }
