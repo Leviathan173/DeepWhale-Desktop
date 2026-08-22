@@ -278,7 +278,6 @@ pub async fn get_balance_payload(state: &AppState) -> Value {
         }
     };
 
-    // 无论哪种模式都先把余额观测记入账本
     let mut payload = json!({
         "ok": true,
         "totalBalance": total,
@@ -327,13 +326,13 @@ pub async fn get_balance_payload(state: &AppState) -> Value {
     };
     if !realtime {
         // local_usage 做阻塞式 SQLite/文件读取（opencode.db + Claude jsonl），挪出 async 执行器
-        if let Some(cost) = tokio::task::spawn_blocking(move || local_usage(&cfg))
-            .await
-            .ok()
-            .flatten()
-        {
-            payload["todayUsage"] = json!(cost);
-            payload["usageMode"] = json!("opencode");
+        match tokio::task::spawn_blocking(move || local_usage(&cfg)).await {
+            Ok(Some(cost)) => {
+                payload["todayUsage"] = json!(cost);
+                payload["usageMode"] = json!("opencode");
+            }
+            Ok(None) => {}
+            Err(e) => eprintln!("[balance] 本地记账任务失败: {e}"),
         }
     }
 
