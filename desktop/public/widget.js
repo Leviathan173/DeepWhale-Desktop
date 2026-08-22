@@ -577,6 +577,11 @@ function refresh(manual) {
         state.todayUsage = data.todayUsage !== undefined ? data.todayUsage : null
         state.isPeak = !!data.isPeak
         state.bailian = (data && data.bailian) || null
+        // 凭据存在与否以接口返回为准：configured===false 才是「没配置」；
+        // 账户运行中新增百炼凭据（设置页抓取后 emit refresh）也能在这里生效。
+        if (data && data.bailian) {
+          state.hasBailian = data.bailian.configured === false ? false : true
+        }
         syncProviderSelect()
         if (state.provider === 'bailian') {
           // 百炼不走余额滚动动画（金额语义不同），直接渲染订阅数据
