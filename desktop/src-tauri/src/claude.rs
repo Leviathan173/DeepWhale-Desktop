@@ -38,6 +38,112 @@ fn scan_jsonl(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
+/// 根据 ~/.claude/settings.json 的 ANTHROPIC_BASE_URL 推断供应商：
+/// 阿里云百炼（token-plan/maas）→ "bailian"（套餐制），官方直连 → None。
+pub fn provider_name() -> Option<String> {
+    let mut p = projects_dir();
+    p.pop(); // projects → .claude
+    p.push("settings.json");
+    let s = fs::read_to_string(&p).ok()?;
+    let v: Value = serde_json::from_str(&s).ok()?;
+    let base = v
+        .get("env")
+        .and_then(|e| e.get("ANTHROPIC_BASE_URL"))
+        .and_then(|x| x.as_str())
+        .unwrap_or("");
+    let b = base.to_ascii_lowercase();
+    if b.contains("token-plan") || b.contains("aliyuncs") || b.contains("maas") {
+        Some("bailian".to_string())
+    } else {
+        None
+    }
+}
+
+/// settings.json 的 env 里显式配置的 API Key（ANTHROPIC_AUTH_TOKEN）。
+/// 返回 (provider 小写, key)；provider 按 baseURL 推断（百炼代理 → bailian）。
+pub fn discover_api_key() -> Option<(String, String)> {
+    let mut p = projects_dir();
+    p.pop();
+    p.push("settings.json");
+    let s = fs::read_to_string(&p).ok()?;
+    let v: Value = serde_json::from_str(&s).ok()?;
+    let env = v.get("env")?;
+    let key = env
+        .get("ANTHROPIC_AUTH_TOKEN")
+        .and_then(|x| x.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())?;
+    let prov = provider_name_from_url(
+        env.get("ANTHROPIC_BASE_URL").and_then(|x| x.as_str()).unwrap_or(""),
+    )
+    .unwrap_or("claude");
+    Some((prov.to_ascii_lowercase(), key))
+}
+
+fn provider_name_from_url(base: &str) -> Option<&'static str> {
+    let b = base.to_ascii_lowercase();
+    if b.contains("token-plan") || b.contains("aliyuncs") || b.contains("maas") {
+        Some("bailian")
+    } else if !b.is_empty() {
+        Some("claude")
+    } else {
+        None
+    }
+}
+
+/// settings.json 里显式指定的模型（ANTHROPIC_DEFAULT_*_MODEL），去重小写。
+fn configured_models() -> Vec<String> {
+    let mut p = projects_dir();
+    p.pop();
+    p.push("settings.json");
+    let mut out = std::collections::BTreeSet::new();
+    if let Ok(s) = fs::read_to_string(&p) {
+        if let Ok(v) = serde_json::from_str::<Value>(&s) {
+            if let Some(map) = v.get("env").and_then(|e| e.as_object()) {
+                for (k, val) in map {
+                    if k.starts_with("ANTHROPIC_DEFAULT_") && k.ends_with("_MODEL") {
+                        if let Some(m) = val.as_str() {
+                            let m = m.to_ascii_lowercase();
+                            if !m.is_empty() {
+                                out.insert(m);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    out.into_iter().collect()
+}
+
+/// 自动发现：Claude Code jsonl 里实际出现的模型名（去重小写）+ settings 显式配置的模型。
+pub fn discover_models(dir: Option<&Path>) -> Vec<String> {
+    let root = dir.map(|d| d.to_path_buf()).unwrap_or_else(projects_dir);
+    let mut set: std::collections::BTreeSet<String> = configured_models().into_iter().collect();
+    let mut files = Vec::new();
+    scan_jsonl(&root, &mut files);
+    for f in files {
+        let Ok(fh) = fs::File::open(&f) else { continue };
+        for line in std::io::BufReader::new(fh).lines().map_while(Result::ok) {
+            let Ok(v) = serde_json::from_str::<Value>(&line) else { continue };
+            if v.get("type").and_then(|x| x.as_str()) != Some("assistant") {
+                continue;
+            }
+            if let Some(m) = v
+                .get("message")
+                .and_then(|m| m.get("model"))
+                .and_then(|x| x.as_str())
+            {
+                let m = m.to_ascii_lowercase();
+                if !m.is_empty() {
+                    set.insert(m);
+                }
+            }
+        }
+    }
+    set.into_iter().collect()
+}
+
 /// 单条 assistant 事件 → (epoch_ms, model, input, output, cache_read, cache_create)。
 fn parse_event(line: &str, today_start: i64) -> Option<(i64, String, i64, i64, i64, i64)> {
     let v: Value = serde_json::from_str(line).ok()?;
@@ -94,7 +200,7 @@ pub fn today_cost(dir: Option<&Path>, providers: &[ProviderCfg]) -> Option<(f64,
                 continue; // 套餐/未配置：不计金额
             };
             found = true;
-            let pi = usize::from(crate::pricing::is_peak_time(ts_ms / 1000));
+            let pi = if u.peak { usize::from(crate::pricing::is_peak_time(ts_ms / 1000)) } else { 0 };
             cost += (cache_read as f64) / 1e6 * u.hit[pi]
                 + (input + cache_create) as f64 / 1e6 * u.miss[pi]
                 + (output as f64) / 1e6 * u.out[pi];
@@ -144,10 +250,12 @@ mod tests {
         let providers = vec![ProviderCfg {
             name: "bailian".into(),
             metric: false,
+            peak: false,
             models: vec![ModelPriceCfg { pattern: "deepseek".into(), ppm: None }],
         }, ProviderCfg {
             name: "LongCat".into(),
             metric: true,
+            peak: false,
             models: vec![ModelPriceCfg { pattern: "longcat".into(), ppm: Some(0.5) }],
         }];
         let (cost, _) = today_cost(Some(&dir), &providers).unwrap();
@@ -158,6 +266,7 @@ mod tests {
         let providers = vec![ProviderCfg {
             name: "bailian".into(),
             metric: false,
+            peak: false,
             models: vec![ModelPriceCfg { pattern: "deepseek".into(), ppm: None }],
         }];
         assert!(today_cost(Some(&dir), &providers).is_none());
@@ -166,6 +275,7 @@ mod tests {
         let providers = vec![ProviderCfg {
             name: "deepseek".into(),
             metric: true,
+            peak: true,
             models: vec![],
         }];
         let (cost, tokens) = today_cost(Some(&dir), &providers).unwrap();

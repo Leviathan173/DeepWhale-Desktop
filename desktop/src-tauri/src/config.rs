@@ -26,12 +26,20 @@ pub struct ModelPriceCfg {
 /// 供应商：决定「按量计费 / 套餐」与这一组模型的定价。
 /// opencode 消息带 providerID，按 name 精确匹配；没有 providerID 的来源（claude jsonl）
 /// 按其 models.pattern 匹配。metric=false（套餐/订阅制，如 tokenplan）不计入今日金额。
+/// peak=true 时按峰谷计价（DeepSeek 官方是典型：命中/输入/输出各自 [空闲,高峰] 两档）；
+/// 模型没填 ppm 也用内置峰谷价目。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderCfg {
     pub name: String,
     pub metric: bool,
+    #[serde(default = "default_true")]
+    pub peak: bool,
     #[serde(default)]
     pub models: Vec<ModelPriceCfg>,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

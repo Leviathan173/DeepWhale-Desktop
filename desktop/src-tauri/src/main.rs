@@ -49,6 +49,7 @@ fn main() {
             load_credentials,
             get_usage_providers,
             set_usage_providers,
+            auto_discover_pricing,
             open_settings,
             capture_login_token,
             image_data_url,
@@ -260,6 +261,68 @@ fn set_usage_providers(app: tauri::AppHandle, providers: Vec<config::ProviderCfg
     let _g = st.cfg.lock().unwrap_or_else(|e| e.into_inner());
     config::write_usage_providers(&st.dir, providers);
     json!({ "ok": true })
+}
+
+/// 自动发现：扫 opencode.db 与 Claude Code jsonl，提炼实际使用过的 (供应商, 模型)，
+/// 生成计价表。保留用户已填写的供应商/模型/单价，新发现的模型用内置价目（DeepSeek 峰谷）。
+#[tauri::command]
+fn auto_discover_pricing(app: tauri::AppHandle) -> Value {
+    use config::{ModelPriceCfg, ProviderCfg};
+    let st = app.state::<AppState>();
+    let _g = st.cfg.lock().unwrap_or_else(|e| e.into_inner());
+    let cfg = config::read(&st.dir);
+    let mut providers: Vec<ProviderCfg> = cfg.usage_providers.clone().unwrap_or_default();
+
+    let find_prov = |name: &str, metric: bool, peak: bool, providers: &mut Vec<ProviderCfg>| -> usize {
+        let lower = name.to_ascii_lowercase();
+        match providers.iter().position(|p| p.name.eq_ignore_ascii_case(&lower)) {
+            Some(i) => i,
+            None => {
+                providers.push(ProviderCfg { name: lower, metric, peak, models: vec![] });
+                providers.len() - 1
+            }
+        }
+    };
+    let add_model = |providers: &mut Vec<ProviderCfg>, pi: usize, model: &str| {
+        let pat = model.to_ascii_lowercase();
+        if pat.is_empty() {
+            return;
+        }
+        if providers[pi].models.iter().any(|m| m.pattern.eq_ignore_ascii_case(&pat)) {
+            return;
+        }
+        providers[pi].models.push(ModelPriceCfg { pattern: pat, ppm: None });
+    };
+
+    // opencode：providerID 精确归供应商。bailian/tokenplan 套餐不计，deepseek 峰谷。
+    let db = opencode::db_path(cfg.opencode_db.as_deref());
+    for (pid, mid) in opencode::discover_models(&db) {
+        let metric = !(pid == "bailian" || pid == "tokenplan");
+        let peak = pid == "deepseek";
+        let i = find_prov(&pid, metric, peak, &mut providers);
+        add_model(&mut providers, i, &mid);
+    }
+    // claude：按 settings.json 推断（百炼代理 → bailian 套餐；官方 → claude 按量平档）。
+    let cname = claude::provider_name().unwrap_or_else(|| "claude".to_string());
+    let cmetric = !cname.eq_ignore_ascii_case("bailian");
+    let ci = find_prov(&cname, cmetric, false, &mut providers);
+    for m in claude::discover_models(None) {
+        add_model(&mut providers, ci, &m);
+    }
+
+    // 各供应商 API Key：opencode auth.json + 配置 + claude settings env，去重。
+    let mut keys = std::collections::BTreeMap::new();
+    for (prov, key) in opencode::discover_api_keys() {
+        keys.entry(prov).or_insert(key);
+    }
+    if let Some((prov, key)) = claude::discover_api_key() {
+        keys.entry(prov).or_insert(key);
+    }
+    let keys: serde_json::Map<String, Value> = keys
+        .into_iter()
+        .map(|(k, v)| (k, json!(v)))
+        .collect();
+    json!({ "providers": providers, "apiKeys": keys })
 }
 
 #[tauri::command]

@@ -125,6 +125,8 @@ pub struct UnitPrice {
     pub hit: [f64; 2],
     pub miss: [f64; 2],
     pub out: [f64; 2],
+    /// 该单是否参与峰谷计价（false 时调用方一律取 0 档即空闲价）。
+    pub peak: bool,
 }
 
 /// 内置默认供应商表，反映常见事实：
@@ -136,6 +138,7 @@ pub fn default_providers() -> Vec<crate::config::ProviderCfg> {
         ProviderCfg {
             name: "bailian".into(),
             metric: false,
+            peak: false,
             models: vec![
                 ModelPriceCfg { pattern: "deepseek".into(), ppm: None },
                 ModelPriceCfg { pattern: "longcat".into(), ppm: None },
@@ -145,45 +148,51 @@ pub fn default_providers() -> Vec<crate::config::ProviderCfg> {
         ProviderCfg {
             name: "tokenplan".into(),
             metric: false,
+            peak: false,
             models: vec![],
         },
         ProviderCfg {
             name: "deepseek".into(),
             metric: true,
+            peak: true,
             models: vec![],
         },
         ProviderCfg {
             name: "anthropic".into(),
             metric: true,
+            peak: false,
             models: vec![],
         },
     ]
 }
 
 /// 内置价目（deepseek 官方 / claude / qwen），按价对象为单价表；未知返回 None。
+/// deepseek 官方峰谷两档；claude/qwen 用平档（不峰谷）。
 pub fn builtin_unit(model: &str) -> Option<UnitPrice> {
     let m = model.to_ascii_lowercase();
     if m.contains("deepseek") {
         let p = price_for(model);
-        Some(UnitPrice { hit: p.hit, miss: p.miss, out: p.out })
+        Some(UnitPrice { hit: p.hit, miss: p.miss, out: p.out, peak: true })
     } else if m.contains("claude") {
         claude_usd(model).map(|p| UnitPrice {
             hit: [p.cache_read * USD_TO_CNY; 2],
             miss: [(p.input) * USD_TO_CNY; 2],
             out: [p.output * USD_TO_CNY; 2],
+            peak: false,
         })
     } else if m.contains("qwen") {
         qwen_cny(model).map(|p| UnitPrice {
             hit: [p.hit; 2],
             miss: [p.miss; 2],
             out: [p.out; 2],
+            peak: false,
         })
     } else {
         None
     }
 }
 
-const ZERO_UNIT: UnitPrice = UnitPrice { hit: [0.0; 2], miss: [0.0; 2], out: [0.0; 2] };
+const ZERO_UNIT: UnitPrice = UnitPrice { hit: [0.0; 2], miss: [0.0; 2], out: [0.0; 2], peak: false };
 
 fn model_matches(patterns: &[crate::config::ModelPriceCfg], model: &str) -> bool {
     let m = model.to_ascii_lowercase();
@@ -199,13 +208,15 @@ pub fn resolve_unit(
     provider: Option<&str>,
 ) -> Option<UnitPrice> {
     use crate::config::ProviderCfg;
+    let clamp_peak = |u: UnitPrice, peak: bool| UnitPrice { peak: u.peak && peak, ..u };
     // 1) 有 providerID：按供应商名精确匹配（opencode 数据）
     if let Some(pid) = provider {
         if let Some(p) = providers.iter().find(|p| p.name.eq_ignore_ascii_case(pid)) {
             if !p.metric {
                 return None;
             }
-            return Some(model_ppm(p, model).or_else(|| builtin_unit(model)).unwrap_or(ZERO_UNIT));
+            let u = model_ppm(p, model).or_else(|| builtin_unit(model)).unwrap_or(ZERO_UNIT);
+            return Some(clamp_peak(u, p.peak));
         }
     }
     // 2) 无 providerID：全表按模型 pattern 匹配（claude jsonl 数据）
@@ -216,7 +227,8 @@ pub fn resolve_unit(
         if !p.metric {
             return None;
         }
-        return Some(model_ppm(p, model).or_else(|| builtin_unit(model)).unwrap_or(ZERO_UNIT));
+        let u = model_ppm(p, model).or_else(|| builtin_unit(model)).unwrap_or(ZERO_UNIT);
+        return Some(clamp_peak(u, p.peak));
     }
     // 3) 兜底：deepseek/claude/qwen 系仍按内置价目计（按量）；其余不计。
     builtin_unit(model)
@@ -228,7 +240,12 @@ fn model_ppm(p: &crate::config::ProviderCfg, model: &str) -> Option<UnitPrice> {
         .iter()
         .find(|c| m.contains(&c.pattern.to_ascii_lowercase()))
         .and_then(|c| c.ppm)
-        .map(|ppm| UnitPrice { hit: [ppm; 2], miss: [ppm; 2], out: [ppm; 2] })
+        .map(|ppm| {
+            // 峰谷供应商下用户填的单折价：高峰按 ×2（DeepSeek 官价即空/峰两档翻倍）。
+            let off = ppm;
+            let peak = if p.peak { ppm * 2.0 } else { ppm };
+            UnitPrice { hit: [off, peak], miss: [off, peak], out: [off, peak], peak: true }
+        })
 }
 
 /// 平台用量响应 → (今日费用, 今日token数)。结构与 OLD JS computeTodayUsage 一致。
@@ -335,6 +352,7 @@ mod tests {
         let plan = vec![ProviderCfg {
             name: "bailian".into(),
             metric: false, // 套餐制
+            peak: false,
             models: vec![ModelPriceCfg { pattern: "deepseek".into(), ppm: None }],
         }];
         // bailian 的 deepseek：按供应商名匹配 → 套餐不计（None）。
@@ -345,6 +363,7 @@ mod tests {
         let metric = vec![ProviderCfg {
             name: "longcat".into(),
             metric: true,
+            peak: true,
             models: vec![ModelPriceCfg { pattern: "longcat".into(), ppm: Some(0.5) }],
         }];
         let u = resolve_unit(&metric, "LongCat-2.0", None).unwrap();

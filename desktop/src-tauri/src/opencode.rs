@@ -4,6 +4,7 @@
 //! output / reasoning），opencode 若改版要同步跟进。
 use rusqlite::Connection;
 use serde_json::Value;
+use std::fs;
 use std::path::{Path, PathBuf};
 use time::PrimitiveDateTime;
 
@@ -43,6 +44,105 @@ pub(crate) fn today_start_ms() -> i64 {
         .assume_offset(offset)
         .unix_timestamp()
         * 1000
+}
+
+/// opencode 数据目录对偶：auth.json 所在目录（db_path 的上级）。
+fn data_dir() -> PathBuf {
+    let mut p = db_path(None);
+    p.pop(); // opencode.db → opencode dir
+    p
+}
+
+/// 自动发现 opencode 里已保存的各供应商 API Key：
+/// auth.json（{provider: {type, key}}）+ 配置文件 provider.options.apiKey。
+/// 返回去重的 (provider 小写, key)。损坏/缺失文件跳过错。
+pub fn discover_api_keys() -> Vec<(String, String)> {
+    let mut out = std::collections::BTreeMap::new();
+
+    // 1) auth.json
+    let auth = data_dir().join("auth.json");
+    if let Ok(s) = fs::read_to_string(&auth) {
+        if let Ok(v) = serde_json::from_str::<Value>(&s) {
+            if let Some(map) = v.as_object() {
+                for (prov, val) in map {
+                    let key = val
+                        .get("key")
+                        .and_then(|x| x.as_str())
+                        .unwrap_or("")
+                        .trim();
+                    if !key.is_empty() {
+                        out.entry(prov.to_ascii_lowercase()).or_insert_with(|| key.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    // 2) opencode.json 配置文件里 provider 显式 apiKey
+    let mut cfg_dir = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            let mut b = std::env::var_os("USERPROFILE")
+                .or_else(|| std::env::var_os("HOME"))
+                .map(PathBuf::from)
+                .unwrap_or_default();
+            b.push(".config");
+            b
+        });
+    cfg_dir.push("opencode/opencode.json");
+    if let Ok(s) = fs::read_to_string(&cfg_dir) {
+        if let Ok(v) = serde_json::from_str::<Value>(&s) {
+            if let Some(provs) = v.get("provider").and_then(|x| x.as_object()) {
+                for (prov, conf) in provs {
+                    if let Some(key) = conf
+                        .get("options")
+                        .and_then(|o| o.get("apiKey"))
+                        .and_then(|x| x.as_str())
+                    {
+                        let key = key.trim();
+                        if !key.is_empty() {
+                            out.entry(prov.to_ascii_lowercase()).or_insert_with(|| key.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    out.into_iter().collect()
+}
+
+/// 自动发现：所有消息里去重的 (providerID, modelID) 小写对。
+/// 用于「自动获取提供商与计费」按钮。
+pub fn discover_models(db: &Path) -> Vec<(String, String)> {
+    let mut set = std::collections::BTreeSet::new();
+    if let Ok(conn) = Connection::open_with_flags(
+        db,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    ) {
+        if let Ok(mut stmt) = conn.prepare("SELECT data FROM message") {
+            if let Ok(rows) = stmt.query_map([], |r| r.get::<_, String>(0)) {
+                for row in rows.flatten() {
+                    let Ok(v) = serde_json::from_str::<Value>(&row) else {
+                        continue;
+                    };
+                    let pid = v
+                        .get("providerID")
+                        .and_then(|x| x.as_str())
+                        .unwrap_or("")
+                        .to_ascii_lowercase();
+                    let mid = v
+                        .get("modelID")
+                        .and_then(|x| x.as_str())
+                        .unwrap_or("")
+                        .to_ascii_lowercase();
+                    if !pid.is_empty() && !mid.is_empty() {
+                        set.insert((pid, mid));
+                    }
+                }
+            }
+        }
+    }
+    set.into_iter().collect()
 }
 
 /// 累加「今天」所有消息的换算费用（CNY）与总 token 数。
@@ -95,7 +195,7 @@ pub fn today_cost(db: &Path, providers: &[ProviderCfg]) -> Option<(f64, f64)> {
             continue; // 套餐/未配置供应商：不计金额
         };
         found = true;
-        let pi = usize::from(is_peak_time(ts / 1000));
+        let pi = if u.peak { usize::from(is_peak_time(ts / 1000)) } else { 0 };
         total_tokens += n;
         cost += (cached_read as f64) / 1e6 * u.hit[pi]
             + (input as f64) / 1e6 * u.miss[pi]
@@ -158,6 +258,7 @@ mod tests {
         let providers = vec![crate::config::ProviderCfg {
             name: "deepseek".into(),
             metric: true,
+            peak: true,
             models: vec![],
         }];
 

@@ -11,6 +11,21 @@
       padding: 20px 24px;
       color: #203170;
     }
+    html { scroll-behavior: smooth; }
+    .layout { display: flex; gap: 18px; align-items: flex-start; }
+    .sidenav {
+      width: 170px; position: sticky; top: 16px; align-self: flex-start;
+      max-height: calc(100vh - 32px); overflow: auto;
+      font-size: 13px; flex-shrink: 0;
+    }
+    .sidenav .nav-title { font-size: 12px; color: #9fb0d9; margin: 6px 8px; }
+    .sidenav a {
+      display: block; padding: 6px 10px; color: #203170; text-decoration: none;
+      border-radius: 6px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .sidenav a:hover { background: #eef1fa; }
+    .sidenav a.active { background: #203170; color: #fff; }
+    .content { flex: 1; min-width: 0; }
     h1 { font-size: 16px; margin: 0 0 14px; }
     label { display: block; font-size: 13px; margin: 10px 0 4px; }
     input {
@@ -57,7 +72,7 @@
     .prov-title .lbl { font-size: 12px; color: #7c8bc4; }
     .prov-title input[type="text"] { width: 180px; }
     .bill { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; margin-left: 10px; }
-    .bill input[type="radio"] { width: auto; margin: 0; }
+    .bill input[type="radio"], .bill input[type="checkbox"] { width: auto; margin: 0; }
     .prov-title .del { margin-left: auto; }
     table.mini { width: 100%; border-collapse: collapse; }
     table.mini th, table.mini td { padding: 5px 12px; text-align: left; font-size: 12px; }
@@ -74,44 +89,58 @@
   </style>
 </head>
 <body>
-  <h1>DeepSeek 凭据设置</h1>
+  <div class="layout">
+    <nav class="sidenav" id="sidenav" aria-label="设置导航"></nav>
+    <div class="content">
 
-  <label for="api-key">DEEPSEEK_API_KEY（余额接口，必填）</label>
-  <input id="api-key" type="password" placeholder="sk-..." autocomplete="off" />
-  <div class="hint">从 platform.deepseek.com 后台生成的 API Key。</div>
+      <section id="sec-creds">
+        <h1>DeepSeek 凭据设置</h1>
 
-  <label for="platform-token">DEEPSEEK_PLATFORM_TOKEN（令牌实时用量，可选）</label>
-  <input id="platform-token" type="password" placeholder="可选" autocomplete="off" />
-  <div class="hint">
-    平台会话令牌。点击下方按钮，在打开的独立浏览器里登录
-    <b>platform.deepseek.com/usage</b>，自动抓取并保存，无需手动复制。<br>
-若自动获取失败，可手动 DevTools 查看用量请求的 Authorization 头填此框。<br>
-令牌保存在本地 <b>config.json</b>，重启后仍有效；若过期失效需重新获取。<br>
-输入框留空点击保存 = 保留原值。留空则使用「小鲸鱼记账（估算）」模式。
-  </div>
-  <div class="row">
-    <button id="autotoken" class="ghost">自动获取令牌</button>
-    <span id="tokstatus"></span>
-  </div>
+        <label for="api-key">DEEPSEEK_API_KEY（余额接口，必填）</label>
+        <input id="api-key" type="password" placeholder="sk-..." autocomplete="off" />
+        <div class="hint">从 platform.deepseek.com 后台生成的 API Key。</div>
 
-  <div class="row">
-    <button id="save">保存</button>
-    <span id="status"></span>
-  </div>
+        <label for="platform-token">DEEPSEEK_PLATFORM_TOKEN（令牌实时用量，可选）</label>
+        <input id="platform-token" type="password" placeholder="可选" autocomplete="off" />
+        <div class="hint">
+        平台会话令牌。点击下方按钮，在打开的独立浏览器里登录
+        <b>platform.deepseek.com/usage</b>，自动抓取并保存，无需手动复制。<br>
+        若自动获取失败，可手动 DevTools 查看用量请求的 Authorization 头填此框。<br>
+        令牌保存在本地 <b>config.json</b>，重启后仍有效；若过期失效需重新获取。<br>
+        输入框留空点击保存 = 保留原值。留空则使用「小鲸鱼记账（估算）」模式。
+        </div>
+        <div class="row">
+          <button id="autotoken" class="ghost">自动获取令牌</button>
+          <span id="tokstatus"></span>
+        </div>
 
-  <hr>
-  <h1>用量计价（本地记账）</h1>
-  <div class="hint">
-    「本地·opencode+Claude」模式按此表算今日金额。<br>
-    每个<b>提供商</b>选一种计费：<b>按量计费</b>（计入今日金额）或<b>套餐·订阅制</b>（如百炼 tokenplan，不计入）。<br>
-    供应商名下是它自己的<b>模型</b>；模型「单价」= <b>元 / 百万 token</b>（含缓存全部 token），留空用内置价目。<br>
-    opencode 数据按供应商名匹配，Claude Code 数据按模型名匹配。全部删空 = 恢复默认。
-  </div>
-  <div id="pricing"></div>
-  <div class="row">
-    <button type="button" class="tiny" id="addprov">+ 新增供应商</button>
-    <button type="button" class="tiny" id="savepricing">保存计价表</button>
-    <span id="pricestatus"></span>
+        <div class="row">
+          <button id="save">保存</button>
+          <span id="status"></span>
+        </div>
+      </section>
+
+      <hr>
+
+      <section id="sec-pricing">
+        <h1>用量计价（本地记账）</h1>
+        <div class="hint">
+          「本地·opencode+Claude」模式按此表算今日金额。<br>
+          每个<b>提供商</b>选一种计费：<b>按量计费</b>（计入今日金额）或<b>套餐·订阅制</b>（如百炼 tokenplan，不计入）。<br>
+          <b>峰谷计价</b>勾选后，高峰时段价格按两档价目或单价的 ×2 计（DeepSeek 官方尤其如此）。<br>
+          供应商名下是它自己的<b>模型</b>；模型「单价」= <b>元 / 百万 token</b>（含缓存全部 token），留空用内置价目。<br>
+          opencode 数据按供应商名匹配，Claude Code 数据按模型名匹配。全部删空 = 恢复默认。
+        </div>
+        <div id="pricing"></div>
+        <div class="row">
+          <button type="button" class="tiny" id="autoprov">自动获取提供商与计费</button>
+          <button type="button" class="tiny" id="addprov">+ 新增供应商</button>
+          <button type="button" class="tiny" id="savepricing">保存计价表</button>
+          <span id="pricestatus"></span>
+        </div>
+      </section>
+
+    </div>
   </div>
 
   <script src="settings.js"></script>

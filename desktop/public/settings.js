@@ -102,8 +102,9 @@
   function applyBillMode(box, metric) {
     box.classList.toggle('disabled', !metric)
     var note = box.querySelector('.prov-note')
-    if (!note) return
-    note.textContent = metric ? '' : '套餐（订阅制）：不计入今日金额，模型单价不生效。'
+    if (note) note.textContent = metric ? '' : '套餐（订阅制）：不计入今日金额，模型单价不生效。'
+    var peakLbl = box.querySelector('.peak-lbl')
+    if (peakLbl) peakLbl.style.display = metric ? '' : 'none'
   }
 
   function addProv(data) {
@@ -121,6 +122,7 @@
     name.placeholder = 'deepseek / bailian / LongCat…'
     if (data && data.name) name.value = data.name
     var group = 'bill-' + (provSeq++)
+    box.id = 'prov-' + (provSeq - 1)
     var metric = !(data && data.metric === false)
     var radioButton = function (text, isMetric) {
       var b = document.createElement('input')
@@ -139,7 +141,15 @@
     del.className = 'del'
     del.textContent = '✕ 删除'
     del.addEventListener('click', function () { box.remove() })
-    title.append(lbl, name, radioButton('按量计费', true), radioButton('套餐·订阅制', false), del)
+    title.append(lbl, name, radioButton('按量计费', true), radioButton('套餐·订阅制', false))
+    var peakCb = document.createElement('input')
+    peakCb.type = 'checkbox'
+    peakCb.checked = !data || data.peak !== false
+    var peakLbl = document.createElement('label')
+    peakLbl.className = 'bill peak-lbl'
+    peakLbl.appendChild(peakCb)
+    peakLbl.append('峰谷计价')
+    title.append(peakLbl, del)
 
     // 模型区
     var models = document.createElement('div')
@@ -167,6 +177,41 @@
     pricingBox.appendChild(box)
   }
 
+  /// 左侧导航：区块锚点 + 各提供商卡片锚点，点击平滑滚动。
+  function buildNav() {
+    var nav = document.getElementById('sidenav')
+    if (!nav) return
+    nav.innerHTML = ''
+    function title(t) {
+      var d = document.createElement('div')
+      d.className = 'nav-title'
+      d.textContent = t
+      nav.appendChild(d)
+    }
+    function link(label, target) {
+      var a = document.createElement('a')
+      a.textContent = label
+      a.addEventListener('click', function () {
+        var el = typeof target === 'string' ? document.getElementById(target) : target
+        if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' })
+        nav.querySelectorAll('a').forEach(function (x) { x.classList.remove('active') })
+        a.classList.add('active')
+      })
+      nav.appendChild(a)
+    }
+    title('设置')
+    link('凭据设置', 'sec-creds')
+    link('用量计价', 'sec-pricing')
+    var boxCount = pricingBox.querySelectorAll('.prov').length
+    if (boxCount > 0) {
+      title('提供商')
+      pricingBox.querySelectorAll('.prov').forEach(function (box) {
+        var nm = box.querySelector('.prov-title input[type=text]') ? box.querySelector('.prov-title input[type=text]').value : ''
+        link(nm || '（未命名）', box.id)
+      })
+    }
+  }
+
   function collectProviders() {
     var out = []
     pricingBox.querySelectorAll('.prov').forEach(function (prov) {
@@ -182,17 +227,42 @@
         if (ppmV !== '') rec.ppm = parseFloat(ppmV)
         models.push(rec)
       })
-      out.push({ name: name, metric: metric, models: models })
+      out.push({ name: name, metric: metric, peak: (box.querySelector('.peak-lbl input[type=checkbox]') || {}).checked, models: models })
     })
     return out
   }
 
   var addProvBtn = document.getElementById('addprov')
   if (addProvBtn) {
-    addProvBtn.addEventListener('click', function () { addProv(null) })
+    addProvBtn.addEventListener('click', function () { addProv(null); buildNav() })
+    var autoBtn = document.getElementById('autoprov')
+    if (autoBtn) {
+      autoBtn.addEventListener('click', function () {
+        autoBtn.disabled = true
+        TAPI.invoke('auto_discover_pricing').then(function (res) {
+          var providers = res && res.providers
+          pricingBox.innerHTML = ''
+          if (Array.isArray(providers)) providers.forEach(addProv)
+          buildNav()
+          var keys = (res && res.apiKeys) || {}
+          var filled = []
+          if (keys.deepseek) { apiEl.value = keys.deepseek; hadKey = keys.deepseek; filled.push('DeepSeek') }
+          if (keys.bailian) { filled.push('百炼') }
+          var others = Object.keys(keys).filter(function (k) {
+            return k !== 'deepseek' && k !== 'bailian'
+          })
+          if (others.length) filled.push(others.join('、'))
+          pricingMsg(filled.length
+            ? '已自动填入凭据：' + filled.join('、') + '（点「保存」生效）'
+            : '已从本机 opencode/Claude 数据生成，检查后保存')
+        }).catch(function () { pricingMsg('自动获取失败') })
+          .finally(function () { autoBtn.disabled = false })
+      })
+    }
     document.getElementById('savepricing').addEventListener('click', function () {
       TAPI.invoke('set_usage_providers', { providers: collectProviders() }).then(function () {
         pricingMsg('计价表已保存')
+        buildNav()
         try {
           var e = window.__TAURI__ && window.__TAURI__.event
           if (e && typeof e.emit === 'function') e.emit('refresh-balance')
@@ -202,6 +272,7 @@
     TAPI.invoke('get_usage_providers')
       .then(function (providers) {
         if (Array.isArray(providers)) providers.forEach(addProv)
+        buildNav()
       })
       .catch(function () {})
   }
