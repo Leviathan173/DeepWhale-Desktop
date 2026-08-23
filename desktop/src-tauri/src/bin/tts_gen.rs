@@ -668,6 +668,13 @@ async fn main() -> ExitCode {
             fail += 1;
             continue;
         };
+        // 条目级 voicePrompt 覆盖全局 instruction（VC 复刻时按每条台词单独调语调）
+        let item_instruction = item["voicePrompt"].as_str().unwrap_or("").to_string();
+        let instruction = if item_instruction.is_empty() {
+            instruction.clone()
+        } else {
+            item_instruction
+        };
         let out = out_dir.join(format!("{id}.mp3"));
         if out.exists() && !force {
             println!("跳过 {id}（已存在，--force 重新生成）");
