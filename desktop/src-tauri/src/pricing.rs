@@ -409,15 +409,19 @@ mod tests {
         // 政策生效后（2026-08-23 00:00 北京时间起）北京周六/周日全天低谷价。
         assert!(!is_peak_time(ts_on(2026, 8, 23, 1))); // 周日 北京 9:00
         assert!(!is_peak_time(ts_on(2026, 8, 23, 9))); // 周日 北京 17:00
-        assert!(!is_peak_time(ts_on(2026, 8, 30, 6))); // 周六 北京 14:00
-                                                       // 生效前周六（8/22）高峰段仍是峰谷老规则；周日 0 点整恰为生效时刻。
+        assert!(!is_peak_time(ts_on(2026, 8, 29, 1))); // 周六 北京 9:00
+        assert!(!is_peak_time(ts_on(2026, 8, 29, 6))); // 周六 北京 14:00
+                                                       // 生效前周六高峰段仍是峰谷老规则。
         assert!(is_peak_time(ts_on(2026, 8, 22, 1))); // 周六 北京 9:00 → 仍高峰
         assert!(!is_peak_time(ts_on(2026, 8, 22, 0))); // 周六 北京 8:00 → 空闲
         assert!(!is_peak_time(ts_on(2026, 8, 22, 15))); // UTC15:00=北京周六23:00，空闲
-        assert!(!is_peak_time(ts_on(2026, 8, 22, 16))); // 恰为生效时刻 2026-08-23 00:00 北京
-                                                        // 政策生效前更早的周末（8/15 周六）高峰段同样按峰谷。
-        assert!(is_peak_time(ts_on(2026, 8, 15, 1)));
-        assert!(!is_peak_time(ts_on(2026, 8, 15, 0)));
+                                                        // 生效常量直接钉住 birth UTC 16:00 = 北京 2026-08-23 00:00（防硬编码漂移，
+                                                        // 老规则在该时刻本就空闲，仅靠 is_peak_time 断言无法察觉常量偏移）。
+        assert_eq!(WEEKEND_VALLEY_START, ts_on(2026, 8, 22, 16));
+        assert!(!is_peak_time(ts_on(2026, 8, 22, 16))); // 恰为生效时刻，且带 is_peak_time 冒烟
+                                                        // 政策生效前更早的周日（8/16）高峰段同样按峰谷老规则。
+        assert!(is_peak_time(ts_on(2026, 8, 16, 2))); // 周日 北京 10:00 → 仍高峰
+        assert!(!is_peak_time(ts_on(2026, 8, 16, 0))); // 周日 北京 8:00 → 空闲
     }
 
     #[test]
