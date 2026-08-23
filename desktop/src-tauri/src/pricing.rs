@@ -1,10 +1,14 @@
 //! DeepSeek 价目换算：从 OLD lib/index.js 直译。
-//! 高峰时段：每日 9:00–12:00 和 14:00–18:00（北京时间）。
+//! 高峰时段：工作日 9:00–12:00 和 14:00–18:00（北京时间）。
+//! 周末（北京周六/周日）全天低谷价：2026-08-23（周日）起官方新政策，不再区分峰谷。
 //! ponytail: 价格表按官方价目硬编码（2025 年），改价需同步更新；若定价漂移会导致
 //! token 实时用量模式的费用/余额换算不准。记账模式不受影响。
 use serde_json::Value;
 
 pub const PEAK_HOURS: [[i32; 2]; 2] = [[9, 12], [14, 18]];
+
+/// 周末全天低谷价生效时间：2026-08-23 00:00（北京时间）= 2026-08-22 16:00 UTC。
+pub const WEEKEND_VALLEY_START: i64 = 1_787_414_400;
 
 /// CNY 每百万 token 价格：[空闲时段价, 高峰时段价]
 /// （deepseek-chat/v4-flash/v4-pro/reasoner 目前共享；分模型定价后再拆。）
@@ -111,17 +115,23 @@ pub fn qwen_cny(model: &str) -> Option<&'static CnyPrices> {
     }
 }
 
-/// bucket time 为 epoch 秒；换算北京时间小时判断峰谷。
+/// bucket time 为 epoch 秒；换算北京时间判断峰谷。
+/// 2026-08-23 起周末（北京周六/周日）全天低谷价（新政策）。
 pub fn is_peak_time(time_sec: i64) -> bool {
-    let hour = time::OffsetDateTime::from_unix_timestamp(time_sec)
-        .map(|t| i32::from((t + time::Duration::hours(8)).hour()))
-        .unwrap_or(0);
-    for [start, end] in PEAK_HOURS {
-        if hour >= start && hour < end {
-            return true;
-        }
+    let Ok(dt) = time::OffsetDateTime::from_unix_timestamp(time_sec) else {
+        return false;
+    };
+    let bj = dt + time::Duration::hours(8);
+    let weekday = bj.weekday();
+    let hour = i32::from(bj.hour());
+    if time_sec >= WEEKEND_VALLEY_START
+        && matches!(weekday, time::Weekday::Saturday | time::Weekday::Sunday)
+    {
+        return false;
     }
-    false
+    PEAK_HOURS
+        .iter()
+        .any(|[start, end]| hour >= *start && hour < *end)
 }
 
 fn num(v: &Value) -> f64 {
@@ -365,24 +375,49 @@ pub fn compute_today_usage(data: &Value) -> Option<(f64, f64)> {
 mod tests {
     use super::*;
 
-    /// UTC 时刻（2026-08-22）→ epoch。北京 = UTC + 8h。
+    /// UTC 时刻（2026-08-24，周一）→ epoch。北京 = UTC + 8h。
     fn ts(h: u8, m: u8) -> i64 {
         time::OffsetDateTime::new_utc(
-            time::Date::from_calendar_date(2026, time::Month::August, 22).unwrap(),
+            time::Date::from_calendar_date(2026, time::Month::August, 24).unwrap(),
             time::Time::from_hms(h, m, 0).unwrap(),
+        )
+        .unix_timestamp()
+    }
+
+    /// 指定日期（UTC）的零点起第 h 小时的 epoch。
+    fn ts_on(y: i32, mo: u8, d: u8, h: u8) -> i64 {
+        time::OffsetDateTime::new_utc(
+            time::Date::from_calendar_date(y, time::Month::try_from(mo).unwrap(), d).unwrap(),
+            time::Time::from_hms(h, 0, 0).unwrap(),
         )
         .unix_timestamp()
     }
 
     #[test]
     fn beijing_hour_boundaries() {
-        assert!(!is_peak_time(ts(0, 59))); // 北京 8:59
+        assert!(!is_peak_time(ts(0, 59))); // 北京 8:59 周一
         assert!(is_peak_time(ts(1, 0))); // 北京 9:00 高峰
         assert!(is_peak_time(ts(3, 59))); // 北京 11:59 高峰
         assert!(!is_peak_time(ts(4, 0))); // 北京 12:00
         assert!(is_peak_time(ts(6, 0))); // 北京 14:00 高峰
         assert!(is_peak_time(ts(9, 59))); // 北京 17:59 高峰
         assert!(!is_peak_time(ts(10, 0))); // 北京 18:00
+    }
+
+    #[test]
+    fn weekend_is_always_off_peak() {
+        // 政策生效后（2026-08-23 00:00 北京时间起）北京周六/周日全天低谷价。
+        assert!(!is_peak_time(ts_on(2026, 8, 23, 1))); // 周日 北京 9:00
+        assert!(!is_peak_time(ts_on(2026, 8, 23, 9))); // 周日 北京 17:00
+        assert!(!is_peak_time(ts_on(2026, 8, 30, 6))); // 周六 北京 14:00
+                                                       // 生效前周六（8/22）高峰段仍是峰谷老规则；周日 0 点整恰为生效时刻。
+        assert!(is_peak_time(ts_on(2026, 8, 22, 1))); // 周六 北京 9:00 → 仍高峰
+        assert!(!is_peak_time(ts_on(2026, 8, 22, 0))); // 周六 北京 8:00 → 空闲
+        assert!(!is_peak_time(ts_on(2026, 8, 22, 15))); // UTC15:00=北京周六23:00，空闲
+        assert!(!is_peak_time(ts_on(2026, 8, 22, 16))); // 恰为生效时刻 2026-08-23 00:00 北京
+                                                        // 政策生效前更早的周末（8/15 周六）高峰段同样按峰谷。
+        assert!(is_peak_time(ts_on(2026, 8, 15, 1)));
+        assert!(!is_peak_time(ts_on(2026, 8, 15, 0)));
     }
 
     #[test]
