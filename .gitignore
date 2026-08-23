@@ -2,3 +2,5 @@ node_modules/
 desktop/node_modules/
 desktop/src-tauri/target/
 desktop/src-tauri/gen/schemas/
+# CodeGraph 索引
+.codegraph/
