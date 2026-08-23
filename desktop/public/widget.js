@@ -201,7 +201,7 @@ bubbleBox.addEventListener('click', function (e) {
   } else {
     // 首次点击：切到随机台词段（不延长总显示时长）
     bubbleRandomActive = true
-    bubbleRandomLines = pickRandomLines()
+    bubbleRandomLines = pickRandomLines(state.provider === 'bailian' ? 0 : -1)
     swapBubbleContent(function () { applyBubbleLines(bubbleRandomLines) })
     // 碎碎念配音：单行段的第一行带 v 语音 id
     var v = bubbleRandomLines && bubbleRandomLines[1] && bubbleRandomLines[1].v
@@ -336,11 +336,16 @@ var RANDOM_GROUPS = [
   { w: 1, lines: function () { return [{ t: '这个', s: 'A', c: '' }, { t: '凶', s: 'B', c: '', v: 'hm_whatsmeant' }, { t: '是什么意思呀...', s: 'A', c: '' }] } },
   { w: 1, lines: function () { return singleCenter('B', '哦鲸鲸... ', '', false, 'hm_whale') } },
 ]
-function pickRandomLines() {
+// skipIdx >= 0 时跳过余额信息段（点击气泡求碎碎念时用），防止抽中还返当前额度。
+function pickRandomLines(skipIdx) {
   var total = 0
-  for (var i = 0; i < RANDOM_GROUPS.length; i++) total += RANDOM_GROUPS[i].w
+  for (var i = 0; i < RANDOM_GROUPS.length; i++) {
+    if (i === skipIdx) continue
+    total += RANDOM_GROUPS[i].w
+  }
   var r = Math.random() * total
   for (var i = 0; i < RANDOM_GROUPS.length; i++) {
+    if (i === skipIdx) continue
     r -= RANDOM_GROUPS[i].w
     if (r < 0) return RANDOM_GROUPS[i].lines()
   }
@@ -910,6 +915,7 @@ function playPress() {
   } catch (err) {}
 }
 function playRelease() {
+  if (soundSet === 'whale') return
   if (releasePlayed || !releaseAudio || !soundOn) return
   releasePlayed = true
   try {
