@@ -19,6 +19,16 @@
     "icon": [
       "icons/icon.ico",
       "icons/icon.png"
-    ]
+    ],
+    "windows": {
+      "nsis": {
+        "installerIcon": "icons/icon.ico",
+        "uninstallerIcon": "icons/icon.ico",
+        "headerImage": "icons/headerImage.bmp",
+        "uninstallerHeaderImage": "icons/headerImage.bmp",
+        "sidebarImage": "icons/sidebarImage.bmp",
+        "languages": ["ChineseSimplified", "English"]
+      }
+    }
   }
 }

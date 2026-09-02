@@ -13,6 +13,7 @@ var REFRESH_MS = 60000
 var CHANGE_MS = 900
 var ANIM_MS = 700
 var BUBBLE_MS = 5000
+var PASSTHROUGH_POLL_MS = 66
 // Tauri IPC bridge: 取代原浏览器版的路由请求（/dsh-whale/*）
 var WHALE = window.__TAURI__ && window.__TAURI__.core ? window.__TAURI__.core : null
 function apiBalance() { return WHALE.invoke('get_balance') }
@@ -433,6 +434,7 @@ function showBubble() {
   if (bubbleTimer) { clearTimeout(bubbleTimer); bubbleTimer = null }
   bubbleShown = true
   bubbleRandomActive = false
+  setPassThrough(false)
   restoreBubbleLines()
   bubbleBox.classList.add('dshwv-bubble-open')
   // 默认展示当前内容；点击气泡切到随机台词段；总时长 5 秒自动关闭
@@ -450,6 +452,7 @@ function hideBubble() {
   bubbleRandomLines = null
   bubbleShown = false
   bubbleBox.classList.remove('dshwv-bubble-open')
+  recheckPassThrough()
 }
 
 // ---- 余额/花费通知：阈值 + 本小时累计 + 每个条件每小时最多一次 ----
@@ -526,6 +529,7 @@ function showNotifBubble(lines) {
   bubbleShown = true
   bubbleRandomActive = false
   bubbleRandomLines = null
+  setPassThrough(false)
   applyBubbleLines(lines)
   bubbleBox.classList.add('dshwv-bubble-open')
   bubbleTimer = setTimeout(hideBubble, BUBBLE_MS)
@@ -1072,6 +1076,7 @@ function closeMenu() {
     menuBox.classList.remove('dshwv-menu-open')
   }
   snapCheck()
+  recheckPassThrough()
 }
 function snapCheck() {
   // 小窗模型：用窗口在屏幕上的坐标判断贴边/贴角
@@ -1141,13 +1146,13 @@ function setupHitTest() {
     probe.src = img.src || IMG_DATA_URL
   } catch (err) {}
 }
-function isWhaleHit(e) {
+function isWhaleXY(clientX, clientY) {
   if (!hitCanvas || !hitReady) return false
   try {
     var r = img.getBoundingClientRect()
     if (!r || r.width <= 0 || r.height <= 0) return false
-    var lx = (e.clientX - r.left) / r.width * 610
-    var ly = (e.clientY - r.top) / r.height * 610
+    var lx = (clientX - r.left) / r.width * 610
+    var ly = (clientY - r.top) / r.height * 610
     if (lx < 0 || ly < 0 || lx >= 610 || ly >= 610) return false
     if (state.h === 'left') lx = 610 - lx
     var data = hitCanvas.getContext('2d').getImageData(Math.floor(lx), Math.floor(ly), 1, 1).data
@@ -1155,6 +1160,31 @@ function isWhaleHit(e) {
   } catch (err) {
     return false
   }
+}
+function isWhaleHit(e) { return isWhaleXY(e.clientX, e.clientY) }
+// ---- 点击穿透 ----
+// 光标不在鲸鱼像素/菜单/气泡上时整窗忽略鼠标（set_ignore_cursor_events），
+// 窗口的透明空白区不再挡住桌面点击。穿透态 webview 收不到任何鼠标事件，
+// 靠 ~66ms 轮询全局光标位置唤醒；气泡/菜单/拖拽期间强制不穿透。
+var passThrough = false
+function setPassThrough(on) {
+  if (on && ((drag && drag.active) || menuOpen || bubbleShown)) on = false
+  if (on === passThrough) return
+  passThrough = on
+  try { WHALE.invoke('set_click_through', { on: on }).catch(function () {}) } catch (err) {}
+}
+setInterval(function () {
+  if (!passThrough) return
+  WHALE.invoke('cursor_pos').then(function (p) {
+    if (passThrough && isWhaleXY(p.x - state.left, p.y - state.top)) setPassThrough(false)
+  }).catch(function () {})
+}, PASSTHROUGH_POLL_MS)
+// 按光标实时位置重判穿透态：气泡/菜单关闭后鼠标可能静止不动，等不到
+// pointermove，不重判就会一直挡点击（启动时也用它兜底）。
+function recheckPassThrough() {
+  WHALE.invoke('cursor_pos').then(function (p) {
+    setPassThrough(!isWhaleXY(p.x - state.left, p.y - state.top))
+  }).catch(function () {})
 }
 function onDocPointerDown(e) {
   if (e.target && e.target.closest) {
@@ -1219,11 +1249,13 @@ function onDocPointerMoveCursor(e) {
   if (el && el.closest && (el.closest('.dshwv-bubble') || el.closest('.dshwv-menu') || el.closest('.dshwv-menu-btn'))) {
     setWidgetCursor('')
     menuBtn.classList.add('dshwv-menu-btn-visible')
+    setPassThrough(false)
     return
   }
   var over = isWhaleHit(e)
   setWidgetCursor(over ? 'grab' : '')
   menuBtn.classList.toggle('dshwv-menu-btn-visible', over || menuOpen)
+  setPassThrough(!over)
 }
 document.addEventListener('pointermove', onDocPointerMoveCursor, true)
 
@@ -1365,6 +1397,7 @@ function bootWidget() {
       return apiGetConfig()
     })
     .then(applyConfig)
+    .then(recheckPassThrough)
     .catch(function () {
       // 配置读取失败：按默认 scale 摆好窗口，别让鲸鱼悬空不显示
       state.scale = 1.5
