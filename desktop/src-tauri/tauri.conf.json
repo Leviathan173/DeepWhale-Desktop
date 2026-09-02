@@ -27,7 +27,7 @@
         "headerImage": "icons/headerImage.bmp",
         "uninstallerHeaderImage": "icons/headerImage.bmp",
         "sidebarImage": "icons/sidebarImage.bmp",
-        "languages": ["ChineseSimplified", "English"]
+        "languages": ["SimpChinese", "English"]
       }
     }
   }
