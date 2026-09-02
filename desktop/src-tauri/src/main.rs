@@ -61,6 +61,8 @@ fn main() {
             screen_size,
             move_window,
             set_window_bounds,
+            set_click_through,
+            cursor_pos,
             set_notify_prefs
         ])
         .build(tauri::generate_context!())
@@ -538,6 +540,28 @@ fn move_window(app: tauri::AppHandle, x: f64, y: f64) -> Result<(), String> {
     };
     win.set_position(tauri::LogicalPosition::new(x, y))
         .map_err(|e| e.to_string())
+}
+
+/// 鲸鱼窗口点击穿透：true 时整窗忽略鼠标，点击直达桌面。
+/// 前端在光标离开鲸鱼图像素时开启，轮询到光标回到鲸鱼身上再关闭。
+#[tauri::command]
+fn set_click_through(app: tauri::AppHandle, on: bool) -> Result<(), String> {
+    let Some(win) = app.get_webview_window("main") else {
+        return Ok(());
+    };
+    win.set_ignore_cursor_events(on).map_err(|e| e.to_string())
+}
+
+/// 全局光标的逻辑坐标（相对主显示器左上角），与 get_window_bounds 同坐标系。
+/// 穿透态下 webview 收不到鼠标事件，前端靠它轮询判断光标是否回到鲸鱼身上。
+#[tauri::command]
+fn cursor_pos(app: tauri::AppHandle) -> Result<Value, String> {
+    let Some(win) = app.get_webview_window("main") else {
+        return Err("no main window".into());
+    };
+    let sf = win.scale_factor().map_err(|e| e.to_string())?.max(0.1);
+    let p = app.cursor_position().map_err(|e| e.to_string())?;
+    Ok(json!({ "x": p.x / sf, "y": p.y / sf }))
 }
 
 /// 设置主窗口位置 + 尺寸（逻辑坐标）。前端在 scale 变化 / 菜单弹出 / 初始化时调用。
