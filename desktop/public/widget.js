@@ -434,7 +434,6 @@ function showBubble() {
   if (bubbleTimer) { clearTimeout(bubbleTimer); bubbleTimer = null }
   bubbleShown = true
   bubbleRandomActive = false
-  setPassThrough(false)
   restoreBubbleLines()
   bubbleBox.classList.add('dshwv-bubble-open')
   // 默认展示当前内容；点击气泡切到随机台词段；总时长 5 秒自动关闭
@@ -529,7 +528,6 @@ function showNotifBubble(lines) {
   bubbleShown = true
   bubbleRandomActive = false
   bubbleRandomLines = null
-  setPassThrough(false)
   applyBubbleLines(lines)
   bubbleBox.classList.add('dshwv-bubble-open')
   bubbleTimer = setTimeout(hideBubble, BUBBLE_MS)
@@ -1163,27 +1161,50 @@ function isWhaleXY(clientX, clientY) {
 }
 function isWhaleHit(e) { return isWhaleXY(e.clientX, e.clientY) }
 // ---- 点击穿透 ----
-// 光标不在鲸鱼像素/菜单/气泡上时整窗忽略鼠标（set_ignore_cursor_events），
+// 光标不在鲸鱼像素/气泡形状/菜单上时整窗忽略鼠标（set_ignore_cursor_events），
 // 窗口的透明空白区不再挡住桌面点击。穿透态 webview 收不到任何鼠标事件，
-// 靠 ~66ms 轮询全局光标位置唤醒；气泡/菜单/拖拽期间强制不穿透。
+// 靠 ~66ms 轮询全局光标位置唤醒。只豁免光标实际压着的区域：气泡/菜单弹出
+// 本身不再整窗强制不穿透（那会让弹出期间桌面点击全被挡）。拖拽中必须收事件。
 var passThrough = false
 function setPassThrough(on) {
-  if (on && ((drag && drag.active) || menuOpen || bubbleShown)) on = false
+  if (on && drag && drag.active) on = false
   if (on === passThrough) return
   passThrough = on
   try { WHALE.invoke('set_click_through', { on: on }).catch(function () {}) } catch (err) {}
 }
+// 全局光标 → 窗口内坐标。菜单弹出时窗口临时扩大，root 反向偏移，
+// 窗口原点 = state.left/top - menuGrow.left/top，换算必须带上这个偏移。
+function localOf(p) {
+  return {
+    x: p.x - state.left + (menuGrow ? menuGrow.left : 0),
+    y: p.y - state.top + (menuGrow ? menuGrow.top : 0)
+  }
+}
+// 光标是否压在可交互 UI 上。elementFromPoint 走 CSS pointer-events 规则：
+// 收起的气泡/菜单整体免疫（pointer-events:none），只有展开的气泡形状、
+// 打开的菜单能命中；菜单按钮靠 visible class 显式门控（它常驻 pointer-events:auto）。
+function overUI(lx, ly) {
+  var el = null
+  try { el = document.elementFromPoint(lx, ly) } catch (err) { return false }
+  if (!el || !el.closest) return false
+  return !!(el.closest('.dshwv-bubble') || el.closest('.dshwv-menu') ||
+            el.closest('.dshwv-menu-btn.dshwv-menu-btn-visible'))
+}
+function interactiveCursor(p) {
+  var l = localOf(p)
+  return isWhaleXY(l.x, l.y) || overUI(l.x, l.y)
+}
 setInterval(function () {
   if (!passThrough) return
   WHALE.invoke('cursor_pos').then(function (p) {
-    if (passThrough && isWhaleXY(p.x - state.left, p.y - state.top)) setPassThrough(false)
+    if (passThrough && interactiveCursor(p)) setPassThrough(false)
   }).catch(function () {})
 }, PASSTHROUGH_POLL_MS)
 // 按光标实时位置重判穿透态：气泡/菜单关闭后鼠标可能静止不动，等不到
 // pointermove，不重判就会一直挡点击（启动时也用它兜底）。
 function recheckPassThrough() {
   WHALE.invoke('cursor_pos').then(function (p) {
-    setPassThrough(!isWhaleXY(p.x - state.left, p.y - state.top))
+    setPassThrough(!interactiveCursor(p))
   }).catch(function () {})
 }
 function onDocPointerDown(e) {
@@ -1244,9 +1265,7 @@ function setWidgetCursor(v) {
 }
 function onDocPointerMoveCursor(e) {
   if (drag && drag.active) { setWidgetCursor('grabbing'); return }
-  var el = null
-  try { el = document.elementFromPoint(e.clientX, e.clientY) } catch (err) {}
-  if (el && el.closest && (el.closest('.dshwv-bubble') || el.closest('.dshwv-menu') || el.closest('.dshwv-menu-btn'))) {
+  if (overUI(e.clientX, e.clientY)) {
     setWidgetCursor('')
     menuBtn.classList.add('dshwv-menu-btn-visible')
     setPassThrough(false)
