@@ -12,6 +12,19 @@ pub const BALANCE_TTL_MS: u128 = 25_000;
 
 pub const BAILIAN_API_URL: &str = "https://bailian-cs.console.aliyun.com/data/api.json";
 
+pub const SUOXIE_BASE: &str = "https://suoxie.codes";
+
+/// 收集一路并行抓取任务（None → 未配置）。统一三处早返回里的收尾样板。
+async fn join_side(t: Option<tokio::task::JoinHandle<Value>>) -> Value {
+    match t {
+        Some(t) => match t.await {
+            Ok(v) => v,
+            Err(e) => json!({ "ok": false, "error": format!("任务失败: {e}") }),
+        },
+        None => json!({ "ok": false, "configured": false }),
+    }
+}
+
 fn now_secs() -> i64 {
     time::OffsetDateTime::now_utc().unix_timestamp()
 }
@@ -204,6 +217,94 @@ fn num_or_str(v: &Value) -> Option<f64> {
         .or_else(|| v.as_str().and_then(|s| s.trim().parse::<f64>().ok()))
 }
 
+/// 用量接口一页的当日花费合计：actual_cost 求和（缺失回退 total_cost）。
+fn page_cost(items: &[Value]) -> f64 {
+    items
+        .iter()
+        .map(|it| {
+            it.get("actual_cost")
+                .filter(|v| !v.is_null())
+                .or_else(|| it.get("total_cost").filter(|v| !v.is_null()))
+                .and_then(num_or_str)
+                .unwrap_or(0.0)
+        })
+        .sum()
+}
+
+/// 梭子蟹「今日」= 服务器按 Asia/Shanghai 判定，硬编码 +8 与看板对齐。
+fn suoxie_today() -> String {
+    let now = time::OffsetDateTime::now_utc() + time::Duration::hours(8);
+    let d = now.date();
+    format!("{:04}-{:02}-{:02}", d.year(), d.month() as u8, d.day())
+}
+
+fn suoxie_headers(req: reqwest::RequestBuilder, auth: &str) -> reqwest::RequestBuilder {
+    req.header("authorization", auth)
+        .header("x-user-ui-request", "1")
+        .header("referer", "https://suoxie.codes/dashboard")
+}
+
+/// 梭子蟹中转站：剩余额度（auth/me data.balance）+ 当日花费（/api/v1/usage 分页累加 actual_cost）。
+async fn fetch_suoxie(client: &reqwest::Client, token: &str) -> Result<Value, String> {
+    let auth = format!("Bearer {}", token.trim_start_matches("Bearer ").trim());
+
+    let me = suoxie_headers(
+        client.get(format!("{SUOXIE_BASE}/api/v1/auth/me?timezone=Asia%2FShanghai")),
+        &auth,
+    )
+    .timeout(Duration::from_secs(15))
+    .send()
+    .await
+    .map_err(|e| e.to_string())?;
+    if !me.status().is_success() {
+        return Err(format!("HTTP {}", me.status().as_u16()));
+    }
+    let me: Value = me.json().await.map_err(|e| e.to_string())?;
+    let balance = me
+        .pointer("/data/balance")
+        .and_then(num_or_str)
+        .ok_or("梭子蟹 auth/me 结构异常")?;
+
+    let day = suoxie_today();
+    let mut spend = 0.0f64;
+    let mut page = 1u32;
+    loop {
+        let url = format!(
+            "{SUOXIE_BASE}/api/v1/usage?start_date={day}&end_date={day}&page={page}&page_size=100&timezone=Asia%2FShanghai"
+        );
+        let r = suoxie_headers(client.get(&url), &auth)
+            .timeout(Duration::from_secs(15))
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
+        if !r.status().is_success() {
+            return Err(format!("HTTP {}", r.status().as_u16()));
+        }
+        let body: Value = r.json().await.map_err(|e| e.to_string())?;
+        if let Some(items) = body.pointer("/data/items").and_then(|v| v.as_array()) {
+            spend += page_cost(items);
+        }
+        // pages 可能是数字/字符串/浮点，兼容解析，缺失按 1
+        let pages = body
+            .pointer("/data/pages")
+            .and_then(num_or_str)
+            .map(|f| f.max(1.0) as u32)
+            .unwrap_or(1);
+        page += 1;
+        // ponytail: 页上限兜底，防分页字段异常死循环
+        if page > pages || page > 50 {
+            break;
+        }
+    }
+
+    Ok(json!({
+        "ok": true,
+        "balance": balance,
+        "currency": "CNY",
+        "todayUsage": spend,
+    }))
+}
+
 /// 组装完整 payload（记账/令牌双模式 + 峰谷标记 + 落缓存）。
 pub async fn get_balance_payload(state: &AppState) -> Value {
     // ponytail: 只取配置快照就释放锁，避免 std MutexGuard 跨 await（async 命令要求 Send）
@@ -225,20 +326,27 @@ pub async fn get_balance_payload(state: &AppState) -> Value {
         }
         _ => None,
     };
+    // 梭子蟹中转站：有 token 才抓，同样并行跑。整体 25s 超时兜底，
+    // 防分页退化时拖慢整个 payload（join 在主流程末尾等待）。
+    let mut suoxie_task = cfg.suoxie_token.clone().map(|tok| {
+        let client = state.client.clone();
+        tokio::spawn(async move {
+            match tokio::time::timeout(Duration::from_secs(25), fetch_suoxie(&client, &tok)).await
+            {
+                Err(_) => json!({ "ok": false, "error": "梭子蟹接口超时" }),
+                Ok(Ok(v)) => v,
+                Ok(Err(e)) => json!({ "ok": false, "error": format!("接口请求失败: {e}") }),
+            }
+        })
+    });
     let Some(key) = cfg.api_key.clone() else {
-        // 已配置百炼却没配 DeepSeek key：先收百炼任务，前端仍能展示百炼数据
-        let bailian = match bailian_task.take() {
-            Some(t) => match t.await {
-                Ok(v) => v,
-                Err(e) => json!({ "ok": false, "error": format!("任务失败: {e}") }),
-            },
-            None => json!({ "ok": false, "configured": false }),
-        };
+        // 已配置百炼/梭子蟹却没配 DeepSeek key：先收尾并行任务，前端仍能展示它们的数据
         return json!({
             "ok": false,
             "code": "NO_KEY",
             "error": "未配置 API Key，请点鲸鱼菜单「设置 API Key」",
-            "bailian": bailian,
+            "bailian": join_side(bailian_task.take()).await,
+            "suoxie": join_side(suoxie_task.take()).await,
         });
     };
 
@@ -246,34 +354,24 @@ pub async fn get_balance_payload(state: &AppState) -> Value {
         Ok(pair) => pair,
         Err(e) => {
             // 瞬时网络/接口抖动：沿用最近成功余额（与 JS transient 行为一致）
-            // 先取快照释放锁，再收百炼任务（避免 std MutexGuard 跨 await 非 Send）
+            // 先取快照释放锁，再收并行任务（避免 std MutexGuard 跨 await 非 Send）
             let cached = state.cache.lock().unwrap().clone();
+            let bailian = join_side(bailian_task.take()).await;
+            let suoxie = join_side(suoxie_task.take()).await;
             if let Some(c) = cached {
-                let best = match bailian_task.take() {
-                    Some(t) => match t.await {
-                        Ok(v) => v,
-                        Err(e) => json!({ "ok": false, "error": format!("任务失败: {e}") }),
-                    },
-                    None => json!({ "ok": false, "configured": false }),
-                };
                 let mut v = c.payload.clone();
-                v["bailian"] = best;
+                v["bailian"] = bailian;
+                v["suoxie"] = suoxie;
                 v["stale"] = Value::Bool(true);
                 v["error"] = json!(e);
                 return v;
             }
-            let bailian = match bailian_task.take() {
-                Some(t) => match t.await {
-                    Ok(v) => v,
-                    Err(e) => json!({ "ok": false, "error": format!("任务失败: {e}") }),
-                },
-                None => json!({ "ok": false, "configured": false }),
-            };
             return json!({
                 "ok": false,
                 "code": "HTTP",
                 "error": format!("余额接口请求失败: {e}"),
-                "bailian": bailian
+                "bailian": bailian,
+                "suoxie": suoxie,
             });
         }
     };
@@ -336,14 +434,9 @@ pub async fn get_balance_payload(state: &AppState) -> Value {
         }
     }
 
-    // 百炼 TokenPlan（订阅制），收并发任务的尾。
-    payload["bailian"] = match bailian_task.take() {
-        Some(t) => match t.await {
-            Ok(v) => v,
-            Err(e) => json!({ "ok": false, "error": format!("任务失败: {e}") }),
-        },
-        None => json!({ "ok": false, "configured": false }),
-    };
+    // 百炼 TokenPlan（订阅制）与梭子蟹（中转站），收并发任务的尾。
+    payload["bailian"] = join_side(bailian_task.take()).await;
+    payload["suoxie"] = join_side(suoxie_task.take()).await;
 
     *state.cache.lock().unwrap() = Some(BalanceCache {
         at: std::time::Instant::now(),
@@ -383,6 +476,28 @@ mod tests {
             check_update: std::sync::atomic::AtomicBool::new(false),
         };
         assert!(cached_payload(&expired).is_none());
+    }
+
+    #[test]
+    fn suoxie_page_cost_sums_actual_cost() {
+        // 实测样本两笔：0.000725 + 0.00096；缺 actual_cost 的回退 total_cost；数字字符串兼容
+        let items: Vec<Value> = serde_json::from_str(
+            r#"[{"actual_cost":0.000725,"total_cost":0.000725},
+                {"actual_cost":null,"total_cost":0.00096},
+                {"actual_cost":"0.5"}]"#,
+        )
+        .unwrap();
+        assert!(
+            (page_cost(&items) - 0.501685).abs() < 1e-9,
+            "got {}",
+            page_cost(&items)
+        );
+        assert_eq!(page_cost(&[]), 0.0);
+        // 今日日期串（+8）：YYYY-MM-DD
+        let d = suoxie_today();
+        assert_eq!(d.len(), 10);
+        assert_eq!(&d[4..5], "-");
+        assert_eq!(&d[7..8], "-");
     }
 
     #[test]

@@ -26,6 +26,7 @@
     }
     .sidenav a:hover { background: #eef1fa; }
     .sidenav a.active { background: #203170; color: #fff; }
+    .sidenav a.sub { padding-left: 24px; font-size: 12px; }
     .content { flex: 1; min-width: 0; }
     h1 { font-size: 16px; margin: 0 0 14px; }
     label { display: block; font-size: 13px; margin: 10px 0 4px; }
@@ -131,11 +132,8 @@
         </div>
         <div class="row">
           <button id="autotoken" class="ghost">自动获取令牌</button>
-          <span id="tokstatus"></span>
-        </div>
-
-        <div class="row">
           <button id="save">保存</button>
+          <span id="tokstatus"></span>
           <span id="status"></span>
         </div>
       </section>
@@ -166,6 +164,39 @@
         </div>
       </section>
 
+      <section id="sec-suoxie">
+        <h1>梭子蟹中转站</h1>
+        <div class="hint">
+          显示<b>剩余额度</b>与<b>当日使用量</b>（suoxie.codes）。该接口需登录后的 JWT 令牌。<br>
+          「自动获取」在勾选本区块底部「附加调试浏览器」时优先附加所配端口（复用已登录会话），
+          未勾选或连不上会拉起独立窗口登录 suoxie.codes。<br>
+          令牌约 24 小时过期；过期后重新点一次「自动获取」即可。<br>
+          备用：抓取失败时可在 DevTools Network 里复制 <code>/api/v1/auth/me</code> 请求
+          <b>Authorization</b> 头里的令牌填入下方框。
+        </div>
+        <label for="suoxie-token">梭子蟹登录令牌（JWT，自动抓取时会填充）</label>
+        <input id="suoxie-token" type="password" placeholder="留空=保留原值" autocomplete="off" />
+        <div class="hint" id="suoxie-sensitivity" style="color:#e0433f">
+          令牌含登录会话凭据，仅保存在本机 config.json；请勿截图/分享，过期后重新自动获取即可。
+        </div>
+        <div class="row">
+          <button id="autosuoxie" class="ghost">自动获取梭子蟹令牌</button>
+          <button id="savesuoxie">保存梭子蟹令牌</button>
+          <span id="suoxiestatus"></span>
+        </div>
+
+        <div class="row" style="margin-top:14px">
+          <input id="debug-attach" type="checkbox" style="width:auto;flex:0 0 auto" />
+          <label for="debug-attach" style="margin:0;white-space:nowrap">附加调试浏览器</label>
+          <input id="debug-port" type="number" min="1" max="65535" step="1" placeholder="9222" style="width:92px;flex:0 0 auto" />
+          <span id="debugstatus"></span>
+        </div>
+        <div class="hint">
+          勾选后各家「自动获取」均优先附加该端口的常驻调试浏览器（复用登录态），失败自动回退新窗口。
+          Edge 需以 <code>--remote-debugging-port=端口 --user-data-dir=独立目录</code> 启动。
+        </div>
+      </section>
+
       <section id="sec-notify">
         <h1>余额 / 花费通知</h1>
         <div class="hint">
@@ -184,6 +215,11 @@
         <input id="bl-hourly-pct" type="number" min="0" max="100" step="0.1" placeholder="如 5" />
         <label for="bl-remaining-pct">百炼：周剩余额度低于（%）</label>
         <input id="bl-remaining-pct" type="number" min="0" max="100" step="1" placeholder="如 20" />
+
+        <label for="sx-hourly-limit">梭子蟹：本小时花费超过（元）</label>
+        <input id="sx-hourly-limit" type="number" min="0" step="0.5" placeholder="如 20" />
+        <label for="sx-min-balance">梭子蟹：余额低于（元）</label>
+        <input id="sx-min-balance" type="number" min="0" step="0.5" placeholder="如 10" />
 
         <div class="row">
           <button id="savenotify">保存通知设置</button>

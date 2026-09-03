@@ -12,7 +12,7 @@ mod pricing;
 use std::time::Duration;
 
 use serde_json::{json, Value};
-use tauri::menu::{Menu, MenuItem};
+use tauri::menu::{ContextMenu, Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{Emitter, Manager};
 
@@ -39,6 +39,8 @@ fn main() {
             });
 
             create_main_window(app)?;
+            // 右键鲸鱼弹的原生菜单：与托盘同一套三项，独立 id 前缀，见 handle_menu_event
+            app.manage(build_app_menu(app.handle(), "popup_")?);
             create_tray(app)?;
             Ok(())
         })
@@ -50,6 +52,8 @@ fn main() {
             load_credentials,
             capture_bailian_credentials,
             save_bailian_credentials,
+            capture_suoxie_token,
+            save_suoxie_token,
             get_usage_providers,
             set_usage_providers,
             auto_discover_pricing,
@@ -65,14 +69,25 @@ fn main() {
             set_window_bounds,
             set_click_through,
             cursor_pos,
+            popup_app_menu,
             set_notify_prefs,
+            set_debug_prefs,
             app_version,
             restart_app,
             take_check_update
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
-        .run(|_app, _event| {});
+        .run(|app, event| {
+            // 右键弹出菜单的点击事件走这里（托盘菜单已由 on_menu_event 处理）。
+            // 只认 popup_ 前缀 id，防止两条通道双发导致一次点击执行两遍。
+            if let tauri::RunEvent::MenuEvent(e) = event {
+                let id = e.id().as_ref();
+                if id.starts_with("popup_") {
+                    handle_menu_event(app, id);
+                }
+            }
+        });
 }
 
 /// 鲸鱼小窗（透明置顶、无边框、可交互）。初始尺寸比照前端 base 公式给个合理值，
@@ -120,14 +135,37 @@ fn screen_logical(app: &tauri::App) -> tauri::Result<(f64, f64)> {
     }
 }
 
-/// 托盘：刷新余额 / 设置 / 退出。
+/// 托盘/鲸鱼右键共用的菜单动作（设置/检查更新/退出）。
+/// 托盘菜单用裸 id，右键弹出菜单用 `popup_` 前缀 id：两条派发通道
+/// （托盘 on_menu_event / RunEvent::MenuEvent）无论是否双发，各自只匹配
+/// 自己前缀的 id，一次点击只执行一次。
+fn handle_menu_event(app: &tauri::AppHandle, id: &str) {
+    match id {
+        "quit" | "popup_quit" => app.exit(0),
+        "settings" | "popup_settings" => {
+            if let Err(e) = open_settings_window(app, false) {
+                eprintln!("open settings failed: {e}");
+            }
+        }
+        "update" | "popup_update" => {
+            if let Err(e) = open_settings_window(app, true) {
+                eprintln!("open settings for update check failed: {e}");
+            }
+        }
+        _ => {}
+    }
+}
+
+fn build_app_menu(handle: &tauri::AppHandle, prefix: &str) -> tauri::Result<Menu<tauri::Wry>> {
+    let settings = MenuItem::with_id(handle, format!("{prefix}settings"), "设置 API Key", true, None::<&str>)?;
+    let update = MenuItem::with_id(handle, format!("{prefix}update"), "检查更新", true, None::<&str>)?;
+    let quit = MenuItem::with_id(handle, format!("{prefix}quit"), "退出", true, None::<&str>)?;
+    Menu::with_items(handle, &[&settings, &update, &quit])
+}
+
+/// 托盘：设置 / 检查更新 / 退出。
 fn create_tray(app: &mut tauri::App) -> tauri::Result<()> {
-    let handle = app.handle();
-    let refresh = MenuItem::with_id(handle, "refresh", "刷新余额", true, None::<&str>)?;
-    let settings = MenuItem::with_id(handle, "settings", "设置 API Key", true, None::<&str>)?;
-    let update = MenuItem::with_id(handle, "update", "检查更新", true, None::<&str>)?;
-    let quit = MenuItem::with_id(handle, "quit", "退出", true, None::<&str>)?;
-    let menu = Menu::with_items(handle, &[&refresh, &settings, &update, &quit])?;
+    let menu = build_app_menu(app.handle(), "")?;
 
     TrayIconBuilder::with_id("main")
         .icon(
@@ -138,25 +176,7 @@ fn create_tray(app: &mut tauri::App) -> tauri::Result<()> {
         .tooltip("小鲸鱼余额")
         .menu(&menu)
         .show_menu_on_left_click(false)
-        .on_menu_event(|app, event| match event.id().as_ref() {
-            "quit" => app.exit(0),
-            "refresh" => {
-                if let Some(win) = app.get_webview_window("main") {
-                    let _ = win.emit("refresh-balance", ());
-                }
-            }
-            "settings" => {
-                if let Err(e) = open_settings_window(app, false) {
-                    eprintln!("open settings failed: {e}");
-                }
-            }
-            "update" => {
-                if let Err(e) = open_settings_window(app, true) {
-                    eprintln!("open settings for update check failed: {e}");
-                }
-            }
-            _ => {}
-        })
+        .on_menu_event(|app, event| handle_menu_event(app, event.id().as_ref()))
         .build(app)
         .map(|_| ())
 }
@@ -172,10 +192,11 @@ fn open_settings_window(app: &tauri::AppHandle, check_update: bool) -> tauri::Re
     }
     if let Some(win) = app.get_webview_window("settings") {
         let _ = win.set_focus();
-        if check_update {
-            if let Err(e) = win.emit("check-update", ()) {
-                eprintln!("emit check-update failed: {e}");
-            }
+        // 设置窗已开着：检查更新滚到「关于与更新」，普通打开滚回「凭据设置」，
+        // 让用户看见刚触发的是什么；新建窗天然在页首，不用发事件
+        let evt = if check_update { "check-update" } else { "scroll-to-creds" };
+        if let Err(e) = win.emit(evt, ()) {
+            eprintln!("emit {evt} failed: {e}");
         }
         return Ok(());
     }
@@ -220,10 +241,15 @@ fn get_config(app: tauri::AppHandle) -> Value {
         "hasApiKey": cfg.api_key.is_some(),
         "provider": cfg.provider,
         "hasBailian": cfg.bailian_cookie.is_some() && cfg.bailian_post_data.is_some(),
+        "hasSuoxie": cfg.suoxie_token.is_some(),
         "dsHourlyLimit": cfg.ds_hourly_limit,
         "dsMinBalance": cfg.ds_min_balance,
         "blHourlyPct": cfg.bl_hourly_pct,
         "blRemainingPct": cfg.bl_remaining_pct,
+        "sxHourlyLimit": cfg.sx_hourly_limit,
+        "sxMinBalance": cfg.sx_min_balance,
+        "debugAttach": cfg.debug_attach,
+        "debugPort": cfg.debug_port,
     })
 }
 
@@ -262,6 +288,8 @@ fn set_notify_prefs(
     ds_min_balance: Option<f64>,
     bl_hourly_pct: Option<f64>,
     bl_remaining_pct: Option<f64>,
+    sx_hourly_limit: Option<f64>,
+    sx_min_balance: Option<f64>,
 ) -> Value {
     let st = app.state::<AppState>();
     let _g = st.cfg.lock().unwrap_or_else(|e| e.into_inner());
@@ -271,6 +299,8 @@ fn set_notify_prefs(
         ds_min_balance,
         bl_hourly_pct,
         bl_remaining_pct,
+        sx_hourly_limit,
+        sx_min_balance,
     );
     json!({ "ok": true })
 }
@@ -301,11 +331,29 @@ fn restart_app(app: tauri::AppHandle) {
     app.restart()
 }
 
+/// 附加调试浏览器端口（配置勾选了才返回 Some）。锁在 await 之前释放。
+fn attach_port(app: &tauri::AppHandle) -> Option<u16> {
+    let st = app.state::<AppState>();
+    let _g = st.cfg.lock().unwrap_or_else(|e| e.into_inner());
+    let cfg = config::read(&st.dir);
+    cfg.debug_attach.then_some(cfg.debug_port)
+}
+
+/// 保存「附加常驻调试浏览器」偏好（port 由 config 层归一 0→9222）。
+#[tauri::command]
+fn set_debug_prefs(app: tauri::AppHandle, attach: bool, port: u16) -> Value {
+    let st = app.state::<AppState>();
+    let _g = st.cfg.lock().unwrap_or_else(|e| e.into_inner());
+    config::write_debug_prefs(&st.dir, attach, port);
+    json!({ "ok": true })
+}
+
 /// 设置窗内嵌的「自动获取令牌」：拉起浏览器等用户登录，抓到 platform
 /// Authorization 直接写回凭据并返回，前端填进输入框。
 #[tauri::command]
 async fn capture_login_token(app: tauri::AppHandle) -> Result<String, String> {
-    let token = login::capture_platform_token().await?;
+    let attach = attach_port(&app);
+    let token = login::capture_platform_token(attach).await?;
     let st = app.state::<AppState>();
     let _g = st.cfg.lock().unwrap_or_else(|e| e.into_inner());
     // 只更新平台令牌，保留已有 api_key（write_credentials 的 None 会清空对应字段）
@@ -336,13 +384,15 @@ fn load_credentials(app: tauri::AppHandle) -> Value {
         "platformToken": cfg.platform_token,
         "bailianCookie": cfg.bailian_cookie,
         "bailianPostData": cfg.bailian_post_data,
+        "suoxieToken": cfg.suoxie_token,
     })
 }
 
 /// 百炼 TokenPlan：自动抓取 Cookie + 完整订阅请求 body + 响应样本，写回 config。
 #[tauri::command]
 async fn capture_bailian_credentials(app: tauri::AppHandle) -> Result<Value, String> {
-    let creds = login::capture_bailian_credentials().await?;
+    let attach = attach_port(&app);
+    let creds = login::capture_bailian_credentials(attach).await?;
     let st = app.state::<AppState>();
     let dir = st.dir.clone();
     // 响应样本仅调试构建落盘（探索期校验解析器用）；发布版不含敏感响应体。
@@ -384,6 +434,32 @@ fn save_bailian_credentials(
         .filter(|s| !s.trim().is_empty())
         .or(cfg.bailian_post_data);
     config::write_bailian_credentials(dir, cookie, post_data);
+    json!({ "ok": true })
+}
+
+/// 梭子蟹：自动抓取登录 JWT，写回 config，触发刷新。
+#[tauri::command]
+async fn capture_suoxie_token(app: tauri::AppHandle) -> Result<Value, String> {
+    let attach = attach_port(&app);
+    let token = login::capture_suoxie_token(attach).await?;
+    let st = app.state::<AppState>();
+    let _g = st.cfg.lock().unwrap_or_else(|e| e.into_inner());
+    config::write_suoxie_token(&st.dir, Some(token.clone()));
+    if let Some(win) = app.get_webview_window("main") {
+        let _ = win.emit("refresh-balance", ());
+    }
+    Ok(json!({ "suoxieToken": token }))
+}
+
+/// 手动保存梭子蟹 token（留空 = 保留原值）。
+#[tauri::command]
+fn save_suoxie_token(app: tauri::AppHandle, suoxie_token: Option<String>) -> Value {
+    let st = app.state::<AppState>();
+    let _g = st.cfg.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = &st.dir;
+    let keep = config::read(dir).suoxie_token;
+    let token = suoxie_token.filter(|s| !s.trim().is_empty()).or(keep);
+    config::write_suoxie_token(dir, token);
     json!({ "ok": true })
 }
 
@@ -607,6 +683,16 @@ fn cursor_pos(app: tauri::AppHandle) -> Result<Value, String> {
     let sf = win.scale_factor().map_err(|e| e.to_string())?.max(0.1);
     let p = app.cursor_position().map_err(|e| e.to_string())?;
     Ok(json!({ "x": p.x / sf, "y": p.y / sf }))
+}
+
+/// 在当前光标位置弹出原生菜单（右键鲸鱼时前端调用）。
+/// `Window` 由 Tauri 按调用方窗口自动注入（稳定 API，绕开 unstable 的 get_window）。
+#[tauri::command]
+fn popup_app_menu(
+    menu: tauri::State<'_, Menu<tauri::Wry>>,
+    win: tauri::Window,
+) -> Result<(), String> {
+    menu.popup(win).map_err(|e| e.to_string())
 }
 
 /// 设置主窗口位置 + 尺寸（逻辑坐标）。前端在 scale 变化 / 菜单弹出 / 初始化时调用。

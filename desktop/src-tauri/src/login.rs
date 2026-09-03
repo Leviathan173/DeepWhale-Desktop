@@ -67,8 +67,23 @@ fn child_gone(child: &mut Child, dir: &std::path::Path) -> Option<String> {
     }
 }
 
-pub async fn capture_platform_token() -> Result<String, String> {
+pub async fn capture_platform_token(attach: Option<u16>) -> Result<String, String> {
     let client = reqwest::Client::new();
+    // 附加模式：先试常驻调试浏览器，复用登录态 reload 逼页面重发用量接口。
+    if let Some(port) = attach {
+        if let Some(t) = attach_sniff_auth(
+            &client,
+            port,
+            "platform.deepseek.com",
+            "https://platform.deepseek.com/usage",
+            &["by_api_key/amount", "/api/v0/usage/"],
+            "deepseek",
+        )
+        .await
+        {
+            return Ok(t);
+        }
+    }
     let (mut child, port, dir) = spawn_browser("https://platform.deepseek.com/usage")?;
     let started = Instant::now();
     let deadline = started + Duration::from_secs(240);
@@ -91,7 +106,15 @@ pub async fn capture_platform_token() -> Result<String, String> {
 
     // 2. 连上 CDP，只收 Network.requestWillBeSent，等 Authorization 头（用户登录后
     //    页面会自动请求 by_api_key/amount，见 balance::USAGE_URL_BASE）。
-    let token = match sniff_auth_header(&page_ws, deadline).await {
+    let token = match sniff_auth_header(
+        &page_ws,
+        deadline,
+        &["by_api_key/amount", "/api/v0/usage/"],
+        false,
+        "请在打开的浏览器里登录 platform.deepseek.com（4 分钟）",
+    )
+    .await
+    {
         Ok(t) => t,
         Err(e) => {
             let _ = child.kill();
@@ -135,14 +158,29 @@ pub struct BailianCreds {
     pub sample: String,
 }
 
-/// 百炼 TokenPlan：拉起独立浏览器到订阅页，等用户登录后嗅探
+const BAILIAN_PLAN_URL: &str =
+    "https://bailian.console.aliyun.com/cn-beijing?tab=plan#/efm/subscription/token-plan/personal";
+
+/// 百炼 TokenPlan：附加常驻调试浏览器（可选）或拉起独立浏览器到订阅页，等用户登录后嗅探
 /// 订阅/用量接口的请求 Cookie + 完整 form body，并抓一次响应体存为样本
 /// （登录后该页会自动请求这两个接口）。
-pub async fn capture_bailian_credentials() -> Result<BailianCreds, String> {
+pub async fn capture_bailian_credentials(attach: Option<u16>) -> Result<BailianCreds, String> {
     let client = reqwest::Client::new();
-    let (mut child, port, dir) = spawn_browser(
-        "https://bailian.console.aliyun.com/cn-beijing?tab=plan#/efm/subscription/token-plan/personal",
-    )?;
+    // 附加模式：登录态在常驻浏览器里，reload 订阅页重发请求即可抓。
+    if let Some(port) = attach {
+        let url_contains = "bailian.console.aliyun.com";
+        if let Some(ws) = find_or_open_page(&client, port, url_contains, BAILIAN_PLAN_URL).await {
+            match sniff_bailian(&ws, Instant::now() + Duration::from_secs(45), true).await {
+                Ok(c) => return Ok(c),
+                Err(e) => {
+                    eprintln!("[bailian] 附加 {port} 抓取失败: {e}，回退新浏览器");
+                }
+            }
+        } else {
+            eprintln!("[bailian] {port} 不可达或打不开百炼页（Edge 需带独立 --user-data-dir + --remote-debugging-port={port} 启动），回退新浏览器");
+        }
+    }
+    let (mut child, port, dir) = spawn_browser(BAILIAN_PLAN_URL)?;
     let started = Instant::now();
     let deadline = started + Duration::from_secs(240);
 
@@ -161,7 +199,7 @@ pub async fn capture_bailian_credentials() -> Result<BailianCreds, String> {
         tokio::time::sleep(Duration::from_millis(600)).await;
     };
 
-    let creds = match sniff_bailian(&page_ws, deadline).await {
+    let creds = match sniff_bailian(&page_ws, deadline, false).await {
         Ok(c) => c,
         Err(e) => {
             let _ = child.kill();
@@ -180,7 +218,7 @@ pub async fn capture_bailian_credentials() -> Result<BailianCreds, String> {
 // 且 body 里的 params.Api 必须匹配查询串的 api，否则服务端会拒。所以捕获/重放都锁 consumption 接口。
 const BAILIAN_API: &str = "tokenplan/personal/api/v2/usage";
 
-async fn sniff_bailian(ws_url: &str, deadline: Instant) -> Result<BailianCreds, String> {
+async fn sniff_bailian(ws_url: &str, deadline: Instant, reload: bool) -> Result<BailianCreds, String> {
     use futures_util::{SinkExt, StreamExt};
     use tokio_tungstenite::connect_async;
     use tokio_tungstenite::tungstenite::Message;
@@ -194,6 +232,26 @@ async fn sniff_bailian(ws_url: &str, deadline: Instant) -> Result<BailianCreds, 
     ))
     .await
     .map_err(|e| e.to_string())?;
+    // 附加到常驻浏览器时页面早已加载完，主动 reload 逼它重发订阅/用量接口。
+    // 用 id 2/3，cmd_id 起点相应后移。
+    let mut cmd_id: u64 = 2;
+    if reload {
+        ws.send(Message::Text(
+            json!({ "id": 2, "method": "Page.enable", "params": {} })
+                .to_string()
+                .into(),
+        ))
+        .await
+        .map_err(|e| e.to_string())?;
+        ws.send(Message::Text(
+            json!({ "id": 3, "method": "Page.reload", "params": { "ignoreCache": false } })
+                .to_string()
+                .into(),
+        ))
+        .await
+        .map_err(|e| e.to_string())?;
+        cmd_id = 4;
+    }
 
     // 注意：Chrome 的 Cookie 头走 Network.requestWillBeSentExtraInfo，
     // 不在 requestWillBeSent 的请求头里。这里两种事件都收，按 requestId 关联。
@@ -202,7 +260,6 @@ async fn sniff_bailian(ws_url: &str, deadline: Instant) -> Result<BailianCreds, 
     let mut post_data: Option<String> = None;
     let mut sample: Option<String> = None;
     // CDP 命令 id 必须单调递增；每个命令回执按 id 关联到对应请求。
-    let mut cmd_id: u64 = 2;
     let mut post_cmd: Option<u64> = None;
     let mut body_cmd: Option<u64> = None;
 
@@ -344,7 +401,13 @@ fn extract_cookie(headers: &Value) -> Option<String> {
     }
 }
 
-async fn sniff_auth_header(ws_url: &str, deadline: Instant) -> Result<String, String> {
+async fn sniff_auth_header(
+    ws_url: &str,
+    deadline: Instant,
+    needles: &[&str],
+    reload: bool,
+    timeout_hint: &str,
+) -> Result<String, String> {
     use futures_util::{SinkExt, StreamExt};
     use tokio_tungstenite::connect_async;
     use tokio_tungstenite::tungstenite::Message;
@@ -358,6 +421,23 @@ async fn sniff_auth_header(ws_url: &str, deadline: Instant) -> Result<String, St
     ))
     .await
     .map_err(|e| e.to_string())?;
+    // 附加到已开着的常驻页面时，请求早已发完；主动 reload 一次逼它再请求。
+    if reload {
+        ws.send(Message::Text(
+            json!({ "id": 2, "method": "Page.enable", "params": {} })
+                .to_string()
+                .into(),
+        ))
+        .await
+        .map_err(|e| e.to_string())?;
+        ws.send(Message::Text(
+            json!({ "id": 3, "method": "Page.reload", "params": { "ignoreCache": false } })
+                .to_string()
+                .into(),
+        ))
+        .await
+        .map_err(|e| e.to_string())?;
+    }
 
     while Instant::now() < deadline {
         let msg = tokio::select! {
@@ -376,7 +456,7 @@ async fn sniff_auth_header(ws_url: &str, deadline: Instant) -> Result<String, St
                         .pointer("/params/request/url")
                         .and_then(|u| u.as_str())
                         .unwrap_or("");
-                    if url.contains("by_api_key/amount") || url.contains("/api/v0/usage/") {
+                    if needles.iter().any(|n| url.contains(n)) {
                         if let Some(auth) = headers.and_then(extract_authorization) {
                             return Ok(auth);
                         }
@@ -385,7 +465,126 @@ async fn sniff_auth_header(ws_url: &str, deadline: Instant) -> Result<String, St
             }
         }
     }
-    Err("等待登录超时（4 分钟）：请在打开的浏览器里登录 platform.deepseek.com".to_string())
+    Err(format!("等待登录/抓取超时：{timeout_hint}"))
+}
+
+const SUOXIE_DASHBOARD: &str = "https://suoxie.codes/dashboard";
+
+/// /json/new? 后面整串会被当 URL 主体，# 段会被 HTTP 层丢掉，先转义。
+fn esc_cdp_url(url: &str) -> String {
+    url.replace('%', "%25")
+        .replace('#', "%23")
+        .replace('?', "%3F")
+        .replace('&', "%26")
+}
+
+/// 在常驻调试浏览器里找含 `url_contains` 的页面 target；没有就 PUT /json/new
+/// 开一个 `open_url` 标签（只开一次，防重试循环狂开标签页）再轮询。
+async fn find_or_open_page(
+    client: &reqwest::Client,
+    port: u16,
+    url_contains: &str,
+    open_url: &str,
+) -> Option<String> {
+    for i in 0..8 {
+        if let Some(ws) = try_find_page(client, port, url_contains).await {
+            return Some(ws);
+        }
+        if i == 0 {
+            let _ = client
+                .request(
+                    reqwest::Method::PUT,
+                    format!("{}/json/new?{}", json_url(port), esc_cdp_url(open_url)),
+                )
+                .timeout(Duration::from_secs(2))
+                .send()
+                .await;
+        }
+        tokio::time::sleep(Duration::from_millis(700)).await;
+    }
+    None
+}
+
+/// 附加抓取公共段：找/开页面 → CDP reload 逼页面重发请求 → 嗅 Authorization 头。
+async fn attach_sniff_auth(
+    client: &reqwest::Client,
+    port: u16,
+    url_contains: &str,
+    open_url: &str,
+    needles: &[&str],
+    tag: &str,
+) -> Option<String> {
+    let Some(ws) = find_or_open_page(client, port, url_contains, open_url).await else {
+        eprintln!(
+            "[{tag}] {port} 不可达或打不开 {url_contains} 页（Edge 需带独立 --user-data-dir + --remote-debugging-port={port} 启动），回退新浏览器"
+        );
+        return None;
+    };
+    match sniff_auth_header(
+        &ws,
+        Instant::now() + Duration::from_secs(45),
+        needles,
+        true,
+        "请确保常驻调试浏览器里已登录该站点",
+    )
+    .await
+    {
+        Ok(t) => Some(t),
+        Err(e) => {
+            eprintln!("[{tag}] 附加 {port} 抓取失败: {e}，回退新浏览器");
+            None
+        }
+    }
+}
+
+/// 梭子蟹（suoxie.codes）：attach=Some(端口) 时优先附加常驻调试 Edge（复用登录态），
+/// 不可用/抓取失败再回退拉起新浏览器登录。
+pub async fn capture_suoxie_token(attach: Option<u16>) -> Result<String, String> {
+    let client = reqwest::Client::new();
+    // 1. 附加常驻调试浏览器
+    if let Some(port) = attach {
+        if let Some(t) = attach_sniff_auth(
+            &client,
+            port,
+            "suoxie.codes",
+            SUOXIE_DASHBOARD,
+            &["suoxie.codes/api/v1/"],
+            "suoxie",
+        )
+        .await
+        {
+            return Ok(t);
+        }
+    }
+    // 2. 回退：独立临时 profile 新浏览器 + 登录嗅探
+    let (mut child, port, dir) = spawn_browser(SUOXIE_DASHBOARD)?;
+    let deadline = Instant::now() + Duration::from_secs(240);
+    let page_ws = loop {
+        if let Some(err) = child_gone(&mut child, &dir) {
+            return Err(err);
+        }
+        if let Some(ws) = try_find_page(&client, port, "suoxie.codes").await {
+            break ws;
+        }
+        if Instant::now() > deadline {
+            let _ = child.kill();
+            let _ = std::fs::remove_dir_all(&dir);
+            return Err("等待打开 suoxie.codes 超时（4 分钟）".to_string());
+        }
+        tokio::time::sleep(Duration::from_millis(600)).await;
+    };
+    let r = sniff_auth_header(
+        &page_ws,
+        deadline,
+        &["suoxie.codes/api/v1/"],
+        false,
+        "请在打开的浏览器里登录 suoxie.codes（4 分钟）",
+    )
+    .await;
+    let _ = child.kill();
+    let _ = child.wait();
+    let _ = std::fs::remove_dir_all(&dir);
+    r
 }
 
 fn extract_authorization(headers: &Value) -> Option<String> {
@@ -422,6 +621,16 @@ mod tests {
         );
         assert!(extract_authorization(&json!({})).is_none());
         assert!(extract_authorization(&json!({"Authorization": "Bearer "})).is_none());
+    }
+
+    #[test]
+    fn cdp_new_tab_url_escaped() {
+        // # 段会被 HTTP 层丢掉，?/& 会被 /json/new 的查询串吃掉——都必须转义
+        assert_eq!(
+            esc_cdp_url("https://a.com/x?tab=plan#/y/z"),
+            "https://a.com/x%3Ftab=plan%23/y/z"
+        );
+        assert_eq!(esc_cdp_url("https://suoxie.codes/dashboard"), "https://suoxie.codes/dashboard");
     }
 
     #[test]
