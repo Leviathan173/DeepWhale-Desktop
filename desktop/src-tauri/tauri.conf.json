@@ -15,6 +15,7 @@
   },
   "bundle": {
     "active": true,
+    "createUpdaterArtifacts": true,
     "targets": "all",
     "icon": [
       "icons/icon.ico",
@@ -29,6 +30,14 @@
         "sidebarImage": "icons/sidebarImage.bmp",
         "languages": ["SimpChinese", "English"]
       }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/Leviathan173/DeepWhale-Desktop/releases/latest/download/latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDZDM0JFRDExNDc4RDQ5MDcKUldRSFNZMUhFZTA3Ykx1R0FDTC85L2luaUMzemhmNkdHRGNDV1k1Z0U5OWpZVHRHdUJHYlN3NjQK"
     }
   }
 }
