@@ -445,6 +445,7 @@
     link('百炼令牌套餐', 'sec-bailian')
     link('余额/花费通知', 'sec-notify')
     link('用量计价', 'sec-pricing')
+    link('关于与更新', 'sec-update')
     var boxCount = pricingBox.querySelectorAll('.prov').length
     if (boxCount > 0) {
       title('提供商')
@@ -545,4 +546,85 @@
       })
       .catch(function () {})
   }
+
+  // ===== 关于与更新（在线升级，tauri-plugin-updater） =====
+  var upCheckBtn = document.getElementById('checkupdate')
+  var upInstallBtn = document.getElementById('installupdate')
+  var upStatus = document.getElementById('updatestatus')
+  var pendingUpdate = null
+  var upBusy = false
+  function upMsg(t) { if (upStatus) upStatus.textContent = t }
+
+  TAPI.invoke('app_version')
+    .then(function (v) {
+      var el = document.getElementById('curver')
+      if (el) el.textContent = 'v' + v
+    })
+    .catch(function () {})
+
+  // 无前端打包环境，直接调 updater 插件的 IPC 命令（等价 @tauri-apps/plugin-updater 的 check/downloadAndInstall）
+  function doCheck() {
+    if (!upCheckBtn || upBusy) return
+    upBusy = true
+    upCheckBtn.disabled = true
+    upMsg('正在检查更新…')
+    TAPI.invoke('plugin:updater|check')
+      .then(function (u) {
+        if (u) {
+          pendingUpdate = u
+          upMsg('发现新版本 v' + u.version + (u.body ? '\n' + u.body : ''))
+          if (upInstallBtn) upInstallBtn.disabled = false
+        } else {
+          pendingUpdate = null
+          if (upInstallBtn) upInstallBtn.disabled = true
+          upMsg('已是最新版本')
+        }
+      })
+      .catch(function () { upMsg('检查失败（离线或无可用更新源）') })
+      .finally(function () { upBusy = false; upCheckBtn.disabled = false })
+  }
+
+  if (upCheckBtn) upCheckBtn.addEventListener('click', doCheck)
+  if (upInstallBtn) {
+    upInstallBtn.addEventListener('click', function () {
+      if (!pendingUpdate) return
+      upInstallBtn.disabled = true
+      upCheckBtn.disabled = true
+      var got = 0
+      var total = 0
+      TAPI.invoke('plugin:updater|download_and_install', {
+        rid: pendingUpdate.rid,
+        onEvent: function (ev) {
+          if (ev.event === 'Started') {
+            total = (ev.data && ev.data.contentLength) || 0
+            upMsg('下载中 0%')
+          } else if (ev.event === 'Progress') {
+            got += (ev.data && ev.data.chunkLength) || 0
+            if (total) upMsg('下载中 ' + Math.min(99, Math.floor((got * 100) / total)) + '%')
+          } else if (ev.event === 'Finished') {
+            upMsg('下载完成，正在安装…')
+          }
+        },
+      })
+        .then(function () {
+          upMsg('安装完成，正在重启…')
+          return TAPI.invoke('restart_app')
+        })
+        .catch(function (e) {
+          upMsg('更新失败：' + e)
+          upInstallBtn.disabled = false
+          upCheckBtn.disabled = false
+        })
+    })
+  }
+
+  // 托盘「检查更新」：事件/启动两条路各自原子取挂起标志，谁取到谁触发（事件丢失由启动 take 兜底，无竞态）
+  function takeAndCheck() {
+    TAPI.invoke('take_check_update')
+      .then(function (on) { if (on) doCheck() })
+      .catch(function () {})
+  }
+  var upEvt = window.__TAURI__ && window.__TAURI__.event
+  if (upEvt) upEvt.listen('check-update', takeAndCheck)
+  takeAndCheck()
 })()

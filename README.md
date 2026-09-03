@@ -20,6 +20,7 @@
 - 🔊 **音效**：按压/松手音效，三套可选（小黄鸭 / 音效1 / 鲸语，缺失时静默降级）
 - 💬 **随机台词**：点击气泡切换台词段，5 秒自动收起；**碎碎念同步语音配音**（百炼 qwen-audio-3.0-tts-plus 离线生成、内嵌播放）
 - 🧸 **按压 Q 弹**玩偶效果；左吸附水平镜像翻转
+- 🔄 **在线更新**：托盘或设置页「检查更新」，新版本一键下载安装（GitHub Releases 源 + minisign 签名校验），无需重新下载覆盖安装包
 
 ## 环境要求
 
@@ -49,7 +50,10 @@ npm run tauri dev
 
 ```powershell
 cd desktop
-npm run tauri build   # 产出 Windows 安装包（.msi/.exe）
+# 在线更新的产物需签名（CI 用 GitHub secrets，本地构建手动注入私钥）
+$env:TAURI_SIGNING_PRIVATE_KEY = Get-Content "$env:USERPROFILE\.tauri\deepwhale.key" -Raw
+$env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = '你的私钥密码'   # 没设密码则留空字符串
+npm run tauri build   # 产出 Windows 安装包（.msi/.exe/.nsis.zip + latest.json）
 ```
 
 产物位于 `desktop/src-tauri/target/release/bundle/`。

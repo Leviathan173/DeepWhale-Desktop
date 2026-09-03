@@ -368,6 +368,7 @@ mod tests {
             })),
             busy: tokio::sync::Mutex::new(()),
             cfg: std::sync::Mutex::new(()),
+            check_update: std::sync::atomic::AtomicBool::new(false),
         };
         assert!(cached_payload(&state).is_some());
         let expired = AppState {
@@ -379,6 +380,7 @@ mod tests {
             })),
             busy: tokio::sync::Mutex::new(()),
             cfg: std::sync::Mutex::new(()),
+            check_update: std::sync::atomic::AtomicBool::new(false),
         };
         assert!(cached_payload(&expired).is_none());
     }

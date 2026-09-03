@@ -15,4 +15,6 @@ pub struct AppState {
     pub busy: tokio::sync::Mutex<()>,
     /// 序列化 config.json 的读改写，避免 set_config 与 save_credentials 并发互相覆盖。
     pub cfg: Mutex<()>,
+    /// 托盘「检查更新」置位；设置页启动或收到事件后取走（一次性），避免监听器未就绪的事件竞态。
+    pub check_update: std::sync::atomic::AtomicBool,
 }

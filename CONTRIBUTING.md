@@ -48,3 +48,6 @@ chore(ci): 增加 cargo 静态检查
 |---|---|---|
 | `check.yml` | 每次 PR | desktop：JS 语法检查 + `cargo fmt/clippy/test` |
 | `release-desktop.yml` | tag `v*` | Tauri 桌面版打包并发布 GitHub Release（draft） |
+
+> release 还需仓库 secrets：`TAURI_SIGNING_PRIVATE_KEY` / `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`（为在线更新签名产物
+> `.nsis.zip` + `latest.json`；对应公钥已写入 `tauri.conf.json`，私钥在维护者本机 `~/.tauri/deepwhale.key`，绝不入库）。

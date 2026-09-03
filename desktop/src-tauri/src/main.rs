@@ -20,6 +20,7 @@ use app_state::AppState;
 
 fn main() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             let dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&dir)?;
@@ -34,6 +35,7 @@ fn main() {
                 cache: std::sync::Mutex::new(None),
                 busy: tokio::sync::Mutex::new(()),
                 cfg: std::sync::Mutex::new(()),
+                check_update: std::sync::atomic::AtomicBool::new(false),
             });
 
             create_main_window(app)?;
@@ -63,7 +65,10 @@ fn main() {
             set_window_bounds,
             set_click_through,
             cursor_pos,
-            set_notify_prefs
+            set_notify_prefs,
+            app_version,
+            restart_app,
+            take_check_update
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
@@ -120,8 +125,9 @@ fn create_tray(app: &mut tauri::App) -> tauri::Result<()> {
     let handle = app.handle();
     let refresh = MenuItem::with_id(handle, "refresh", "刷新余额", true, None::<&str>)?;
     let settings = MenuItem::with_id(handle, "settings", "设置 API Key", true, None::<&str>)?;
+    let update = MenuItem::with_id(handle, "update", "检查更新", true, None::<&str>)?;
     let quit = MenuItem::with_id(handle, "quit", "退出", true, None::<&str>)?;
-    let menu = Menu::with_items(handle, &[&refresh, &settings, &quit])?;
+    let menu = Menu::with_items(handle, &[&refresh, &settings, &update, &quit])?;
 
     TrayIconBuilder::with_id("main")
         .icon(
@@ -140,8 +146,13 @@ fn create_tray(app: &mut tauri::App) -> tauri::Result<()> {
                 }
             }
             "settings" => {
-                if let Err(e) = open_settings_window(app) {
+                if let Err(e) = open_settings_window(app, false) {
                     eprintln!("open settings failed: {e}");
+                }
+            }
+            "update" => {
+                if let Err(e) = open_settings_window(app, true) {
+                    eprintln!("open settings for update check failed: {e}");
                 }
             }
             _ => {}
@@ -150,9 +161,22 @@ fn create_tray(app: &mut tauri::App) -> tauri::Result<()> {
         .map(|_| ())
 }
 
-fn open_settings_window(app: &tauri::AppHandle) -> tauri::Result<()> {
+/// 打开设置窗口。`check_update=true`（托盘「检查更新」）时置 AppState 挂起标志并广播事件：
+/// 窗口已就绪 → 监听者 take 走标志触发检查；刚建好还没注册监听 → 事件丢失但启动 take 兜底。
+/// 两条路消费同一原子标志，无一次性事件竞态。
+fn open_settings_window(app: &tauri::AppHandle, check_update: bool) -> tauri::Result<()> {
+    if check_update {
+        app.state::<AppState>()
+            .check_update
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
     if let Some(win) = app.get_webview_window("settings") {
         let _ = win.set_focus();
+        if check_update {
+            if let Err(e) = win.emit("check-update", ()) {
+                eprintln!("emit check-update failed: {e}");
+            }
+        }
         return Ok(());
     }
     tauri::WebviewWindowBuilder::new(
@@ -253,7 +277,28 @@ fn set_notify_prefs(
 
 #[tauri::command]
 async fn open_settings(app: tauri::AppHandle) -> Result<(), String> {
-    open_settings_window(&app).map_err(|e| e.to_string())
+    open_settings_window(&app, false).map_err(|e| e.to_string())
+}
+
+/// 当前应用版本。取 tauri.conf.json 的值（updater 的比较基准），避免与 Cargo.toml 漂移。
+#[tauri::command]
+fn app_version(app: tauri::AppHandle) -> String {
+    app.package_info().version.to_string()
+}
+
+/// 原子取走「检查更新」挂起标志（托盘置位；设置页启动/事件两条路谁先消费谁触发）。
+#[tauri::command]
+fn take_check_update(app: tauri::AppHandle) -> bool {
+    app.state::<AppState>()
+        .check_update
+        .swap(false, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// 在线更新安装完后重启。download_and_install 的 NSIS 流程需要本进程退出，
+/// 装完由安装包拉起新版本。
+#[tauri::command]
+fn restart_app(app: tauri::AppHandle) {
+    app.restart()
 }
 
 /// 设置窗内嵌的「自动获取令牌」：拉起浏览器等用户登录，抓到 platform
