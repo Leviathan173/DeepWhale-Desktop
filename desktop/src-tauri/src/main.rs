@@ -157,8 +157,20 @@ fn handle_menu_event(app: &tauri::AppHandle, id: &str) {
 }
 
 fn build_app_menu(handle: &tauri::AppHandle, prefix: &str) -> tauri::Result<Menu<tauri::Wry>> {
-    let settings = MenuItem::with_id(handle, format!("{prefix}settings"), "设置 API Key", true, None::<&str>)?;
-    let update = MenuItem::with_id(handle, format!("{prefix}update"), "检查更新", true, None::<&str>)?;
+    let settings = MenuItem::with_id(
+        handle,
+        format!("{prefix}settings"),
+        "设置 API Key",
+        true,
+        None::<&str>,
+    )?;
+    let update = MenuItem::with_id(
+        handle,
+        format!("{prefix}update"),
+        "检查更新",
+        true,
+        None::<&str>,
+    )?;
     let quit = MenuItem::with_id(handle, format!("{prefix}quit"), "退出", true, None::<&str>)?;
     Menu::with_items(handle, &[&settings, &update, &quit])
 }
@@ -194,7 +206,11 @@ fn open_settings_window(app: &tauri::AppHandle, check_update: bool) -> tauri::Re
         let _ = win.set_focus();
         // 设置窗已开着：检查更新滚到「关于与更新」，普通打开滚回「凭据设置」，
         // 让用户看见刚触发的是什么；新建窗天然在页首，不用发事件
-        let evt = if check_update { "check-update" } else { "scroll-to-creds" };
+        let evt = if check_update {
+            "check-update"
+        } else {
+            "scroll-to-creds"
+        };
         if let Err(e) = win.emit(evt, ()) {
             eprintln!("emit {evt} failed: {e}");
         }

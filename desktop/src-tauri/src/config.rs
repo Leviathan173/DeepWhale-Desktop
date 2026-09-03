@@ -272,7 +272,11 @@ pub fn write_suoxie_token(dir: &Path, token: Option<String>) {
 pub fn write_debug_prefs(dir: &Path, attach: bool, port: u16) {
     let mut cfg = read(dir);
     cfg.debug_attach = attach;
-    cfg.debug_port = if port == 0 { default_debug_port() } else { port };
+    cfg.debug_port = if port == 0 {
+        default_debug_port()
+    } else {
+        port
+    };
     write_file(dir, &cfg);
 }
 
@@ -328,7 +332,15 @@ mod tests {
         assert!(read(&dir).ds_hourly_limit.is_none());
 
         // 有效正数保存，0 / 负数 / NaN 归一为 None；百分比 >100 也归一
-        write_notify_prefs(&dir, Some(20.0), Some(0.0), Some(-1.0), Some(150.0), Some(9.0), Some(0.0));
+        write_notify_prefs(
+            &dir,
+            Some(20.0),
+            Some(0.0),
+            Some(-1.0),
+            Some(150.0),
+            Some(9.0),
+            Some(0.0),
+        );
         let c = read(&dir);
         assert_eq!(c.ds_hourly_limit, Some(20.0));
         assert!(c.ds_min_balance.is_none());
@@ -372,7 +384,10 @@ mod tests {
         write_suoxie_token(&dir, Some("   ".to_string()));
         assert!(read(&dir).suoxie_token.is_none());
         // debug prefs 往返 + port=0 归一 9222 + 不动凭据
-        assert_eq!((read(&dir).debug_attach, read(&dir).debug_port), (false, 9222));
+        assert_eq!(
+            (read(&dir).debug_attach, read(&dir).debug_port),
+            (false, 9222)
+        );
         write_debug_prefs(&dir, true, 9223);
         write_debug_prefs(&dir, true, 0);
         let c = read(&dir);

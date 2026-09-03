@@ -249,7 +249,9 @@ async fn fetch_suoxie(client: &reqwest::Client, token: &str) -> Result<Value, St
     let auth = format!("Bearer {}", token.trim_start_matches("Bearer ").trim());
 
     let me = suoxie_headers(
-        client.get(format!("{SUOXIE_BASE}/api/v1/auth/me?timezone=Asia%2FShanghai")),
+        client.get(format!(
+            "{SUOXIE_BASE}/api/v1/auth/me?timezone=Asia%2FShanghai"
+        )),
         &auth,
     )
     .timeout(Duration::from_secs(15))
@@ -331,8 +333,7 @@ pub async fn get_balance_payload(state: &AppState) -> Value {
     let mut suoxie_task = cfg.suoxie_token.clone().map(|tok| {
         let client = state.client.clone();
         tokio::spawn(async move {
-            match tokio::time::timeout(Duration::from_secs(25), fetch_suoxie(&client, &tok)).await
-            {
+            match tokio::time::timeout(Duration::from_secs(25), fetch_suoxie(&client, &tok)).await {
                 Err(_) => json!({ "ok": false, "error": "梭子蟹接口超时" }),
                 Ok(Ok(v)) => v,
                 Ok(Err(e)) => json!({ "ok": false, "error": format!("接口请求失败: {e}") }),

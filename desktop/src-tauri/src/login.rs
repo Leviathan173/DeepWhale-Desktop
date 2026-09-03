@@ -218,7 +218,11 @@ pub async fn capture_bailian_credentials(attach: Option<u16>) -> Result<BailianC
 // 且 body 里的 params.Api 必须匹配查询串的 api，否则服务端会拒。所以捕获/重放都锁 consumption 接口。
 const BAILIAN_API: &str = "tokenplan/personal/api/v2/usage";
 
-async fn sniff_bailian(ws_url: &str, deadline: Instant, reload: bool) -> Result<BailianCreds, String> {
+async fn sniff_bailian(
+    ws_url: &str,
+    deadline: Instant,
+    reload: bool,
+) -> Result<BailianCreds, String> {
     use futures_util::{SinkExt, StreamExt};
     use tokio_tungstenite::connect_async;
     use tokio_tungstenite::tungstenite::Message;
@@ -630,7 +634,10 @@ mod tests {
             esc_cdp_url("https://a.com/x?tab=plan#/y/z"),
             "https://a.com/x%3Ftab=plan%23/y/z"
         );
-        assert_eq!(esc_cdp_url("https://suoxie.codes/dashboard"), "https://suoxie.codes/dashboard");
+        assert_eq!(
+            esc_cdp_url("https://suoxie.codes/dashboard"),
+            "https://suoxie.codes/dashboard"
+        );
     }
 
     #[test]
