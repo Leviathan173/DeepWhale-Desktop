@@ -116,10 +116,11 @@ usageSelect.className = 'dshwv-sound'
 usageSelect.appendChild(soundOpt('token', '实时·令牌 (推荐，设置里自动获取)'))
 usageSelect.appendChild(soundOpt('opencode', '小鲸鱼记账 (本地会话按计价表计算)'))
 usageSelect.addEventListener('change', function () { setUsageMode(usageSelect.value) })
-// 启用的供应商列表（按此顺序点击鲸鱼轮换）：deepseek 恒有，百炼有凭据才加入。
+// 启用的供应商列表（按此顺序点击鲸鱼轮换）：deepseek 恒有，百炼/梭子蟹有凭据才加入。
 function providerList() {
   var list = ['deepseek']
   if (state.hasBailian) list.push('bailian')
+  if (state.hasSuoxie) list.push('suoxie')
   return list
 }
 function normalizeProvider() {
@@ -239,7 +240,9 @@ var state = {
   message: '',
   provider: 'deepseek',
   hasBailian: false,
-  bailian: null
+  bailian: null,
+  hasSuoxie: false,
+  suoxie: null
 }
 var busy = false
 var settleTimer = null
@@ -301,7 +304,9 @@ var MURMUR_MORE = [
 ]
 function singleCenter(style, text, color, wrap, v) { return [null, { t: text, s: style, c: color || '', w: !!wrap, v: v || null }, null] }
 function providerLabel() {
-  return state.provider === 'bailian' ? '百炼 TokenPlan' : 'DeepSeek 余额'
+  if (state.provider === 'bailian') return '百炼 TokenPlan'
+  if (state.provider === 'suoxie') return '梭子蟹余额'
+  return 'DeepSeek 余额'
 }
 function buildGroup1() {
   if (state.provider === 'bailian') {
@@ -319,6 +324,21 @@ function buildGroup1() {
       { t: '周剩余额度', s: 'S', c: '' },
       { t: String(b.remaining != null ? b.remaining : '--'), s: 'B', c: '' },
       { t: '重置 ' + fmtReset(b.resetAt), s: 'C', c: '' }
+    ]
+  }
+  if (state.provider === 'suoxie') {
+    var s = state.suoxie
+    if (!s || !s.ok) {
+      return [
+        { t: '梭子蟹 · 未配置', s: 'A', c: '' },
+        null,
+        { t: '请在设置获取 token', s: 'C', c: '' }
+      ]
+    }
+    return [
+      { t: '梭子蟹余额', s: 'A', c: '' },
+      { t: fmt(s.balance, s.currency || 'CNY'), s: 'B', c: '' },
+      { t: '今日已用 ' + fmt(s.todayUsage, s.currency || 'CNY'), s: 'C', c: '' }
     ]
   }
   var peak = !!state.isPeak
@@ -434,7 +454,6 @@ function showBubble() {
   if (bubbleTimer) { clearTimeout(bubbleTimer); bubbleTimer = null }
   bubbleShown = true
   bubbleRandomActive = false
-  setPassThrough(false)
   restoreBubbleLines()
   bubbleBox.classList.add('dshwv-bubble-open')
   // 默认展示当前内容；点击气泡切到随机台词段；总时长 5 秒自动关闭
@@ -457,7 +476,7 @@ function hideBubble() {
 
 // ---- 余额/花费通知：阈值 + 本小时累计 + 每个条件每小时最多一次 ----
 // 阈值来自配置（get_config）；deepseek 按金额(元)，百炼按百分比。
-var notifyCfg = { dsHourlyLimit: null, dsMinBalance: null, blHourlyPct: null, blRemainingPct: null }
+var notifyCfg = { dsHourlyLimit: null, dsMinBalance: null, blHourlyPct: null, blRemainingPct: null, sxHourlyLimit: null, sxMinBalance: null }
 function numThreshold(v) { return (typeof v === 'number') && isFinite(v) && v > 0 ? v : null }
 function applyNotifyCfg(d) {
   if (!d) return
@@ -465,10 +484,12 @@ function applyNotifyCfg(d) {
   notifyCfg.dsMinBalance = numThreshold(d.dsMinBalance)
   notifyCfg.blHourlyPct = numThreshold(d.blHourlyPct)
   notifyCfg.blRemainingPct = numThreshold(d.blRemainingPct)
+  notifyCfg.sxHourlyLimit = numThreshold(d.sxHourlyLimit)
+  notifyCfg.sxMinBalance = numThreshold(d.sxMinBalance)
 }
 // 本小时起点与 Δ 累计：跨小时归零重算（重启后从当前值起算）
-var hourState = { hour: -1, prevDs: null, dsSpend: 0, prevBl: null, blSpend: 0 }
-var lastNotif = { dsLow: -1, dsHourly: -1, blLow: -1, blHourly: -1 }
+var hourState = { hour: -1, prevDs: null, dsSpend: 0, prevBl: null, blSpend: 0, prevSx: null, sxSpend: 0 }
+var lastNotif = { dsLow: -1, dsHourly: -1, blLow: -1, blHourly: -1, sxLow: -1, sxHourly: -1 }
 function fmtV(v) { return String(Number(v)) }
 // 计算/判定通知条件；命中返回气泡行，未命中返回 false。
 function checkNotifs(data) {
@@ -477,13 +498,18 @@ function checkNotifs(data) {
   var currency = String(data.currency || 'CNY')
   var bl = data && data.bailian
   var blRemain = (bl && bl.ok) ? parseFloat(String(bl.remaining)) : NaN
+  var sx = data && data.suoxie
+  var sxBal = (sx && sx.ok) ? Number(sx.balance) : NaN
+  var sxCurrency = (sx && sx.currency) || 'CNY'
   // 小时累计
   if (hourState.hour !== hour) {
     hourState.hour = hour
     hourState.dsSpend = 0
     hourState.blSpend = 0
+    hourState.sxSpend = 0
     hourState.prevDs = bal
     hourState.prevBl = blRemain
+    hourState.prevSx = sxBal
   } else {
     if (isFinite(hourState.prevDs)) {
       var d = hourState.prevDs - bal
@@ -495,6 +521,11 @@ function checkNotifs(data) {
       if (b > 0) hourState.blSpend += b
     }
     hourState.prevBl = blRemain
+    if (isFinite(hourState.prevSx) && isFinite(sxBal)) {
+      var x = hourState.prevSx - sxBal
+      if (x > 0) hourState.sxSpend += x
+    }
+    hourState.prevSx = sxBal
   }
   function did(key) {
     if (lastNotif[key] === hour) return false
@@ -521,6 +552,16 @@ function checkNotifs(data) {
             { t: hourState.blSpend.toFixed(1) + '%', s: 'B', c: '' },
             { t: '超过 ' + fmtV(notifyCfg.blHourlyPct) + '%', s: 'C', c: '' }]
   }
+  if (notifyCfg.sxMinBalance != null && isFinite(sxBal) && sxBal < notifyCfg.sxMinBalance && did('sxLow')) {
+    return [{ t: '梭子蟹 余额不足', s: 'A', c: '#e0433f' },
+            { t: fmt(sxBal, sxCurrency), s: 'B', c: '' },
+            { t: '低于 ¥' + fmtV(notifyCfg.sxMinBalance), s: 'C', c: '' }]
+  }
+  if (notifyCfg.sxHourlyLimit != null && hourState.sxSpend >= notifyCfg.sxHourlyLimit && did('sxHourly')) {
+    return [{ t: '梭子蟹 本小时已花费', s: 'A', c: '#e0433f' },
+            { t: fmt(hourState.sxSpend, sxCurrency), s: 'B', c: '' },
+            { t: '超过 ¥' + fmtV(notifyCfg.sxHourlyLimit), s: 'C', c: '' }]
+  }
   return false
 }
 // 通知泡泡：复用点击鲸鱼的气泡样式，只替换文案
@@ -529,7 +570,6 @@ function showNotifBubble(lines) {
   bubbleShown = true
   bubbleRandomActive = false
   bubbleRandomLines = null
-  setPassThrough(false)
   applyBubbleLines(lines)
   bubbleBox.classList.add('dshwv-bubble-open')
   bubbleTimer = setTimeout(hideBubble, BUBBLE_MS)
@@ -722,22 +762,26 @@ function refresh(manual) {
   apiBalance()
     .then(function (data) {
       if (data && data.ok) {
-        var nb = Number(data.totalBalance)
-        var nc = String(data.currency || 'CNY')
+        state.bailian = (data && data.bailian) || null
+        state.suoxie = (data && data.suoxie) || null
+        // 凭据存在与否以接口返回为准：configured===false 才是「没配置」；
+        // 账户运行中新增凭据（设置页抓取后 emit refresh）也能在这里生效。
+        if (data.bailian) state.hasBailian = data.bailian.configured === false ? false : true
+        if (data.suoxie) state.hasSuoxie = data.suoxie.configured === false ? false : true
+        normalizeProvider()
+        // 展示金额来源：suoxie 走它自己的 balance/todayUsage（与 deepseek 同款余额展示），
+        // 其余用顶层 deepseek totalBalance/todayUsage。
+        var useSx = state.provider === 'suoxie' && data.suoxie && data.suoxie.ok
+        var nb = Number(useSx ? data.suoxie.balance : data.totalBalance)
+        var nc = String((useSx ? data.suoxie.currency : data.currency) || 'CNY')
         var changed = state.balance !== null && (nb !== state.balance || nc !== state.currency)
         var currencyChanged = state.currency !== null && nc !== state.currency
         state.balance = nb
         state.currency = nc
         state.message = ''
-        state.todayUsage = data.todayUsage !== undefined ? data.todayUsage : null
+        var tu = useSx ? data.suoxie.todayUsage : data.todayUsage
+        state.todayUsage = tu !== undefined ? tu : null
         state.isPeak = !!data.isPeak
-        state.bailian = (data && data.bailian) || null
-        // 凭据存在与否以接口返回为准：configured===false 才是「没配置」；
-        // 账户运行中新增百炼凭据（设置页抓取后 emit refresh）也能在这里生效。
-        if (data && data.bailian) {
-          state.hasBailian = data.bailian.configured === false ? false : true
-        }
-        normalizeProvider()
         // 通知判定优先于余额滚动/常规气泡：命中则先 render 更新余额文本（气泡内容由
         // applyBubbleLines 覆盖，互不冲突），随后弹通知泡泡并跳过动画分支。
         var notifLines = checkNotifs(data)
@@ -751,6 +795,13 @@ function refresh(manual) {
         if (state.provider === 'bailian') {
           // 百炼不走余额滚动动画（金额语义不同），直接渲染订阅数据
           state.status = 'ok'
+          render()
+        } else if (state.provider === 'suoxie' && !useSx) {
+          // 展示供应商是梭子蟹但抓取失败（如 JWT 过期）：报它自己的错，别拿 DeepSeek 数字顶包
+          state.status = 'error'
+          state.message = (data.suoxie && data.suoxie.error)
+            ? String(data.suoxie.error)
+            : '未配置梭子蟹 · 请在设置获取'
           render()
         } else if (changed && !currencyChanged) {
           if (!manual) {
@@ -1163,27 +1214,50 @@ function isWhaleXY(clientX, clientY) {
 }
 function isWhaleHit(e) { return isWhaleXY(e.clientX, e.clientY) }
 // ---- 点击穿透 ----
-// 光标不在鲸鱼像素/菜单/气泡上时整窗忽略鼠标（set_ignore_cursor_events），
+// 光标不在鲸鱼像素/气泡形状/菜单上时整窗忽略鼠标（set_ignore_cursor_events），
 // 窗口的透明空白区不再挡住桌面点击。穿透态 webview 收不到任何鼠标事件，
-// 靠 ~66ms 轮询全局光标位置唤醒；气泡/菜单/拖拽期间强制不穿透。
+// 靠 ~66ms 轮询全局光标位置唤醒。只豁免光标实际压着的区域：气泡/菜单弹出
+// 本身不再整窗强制不穿透（那会让弹出期间桌面点击全被挡）。拖拽中必须收事件。
 var passThrough = false
 function setPassThrough(on) {
-  if (on && ((drag && drag.active) || menuOpen || bubbleShown)) on = false
+  if (on && drag && drag.active) on = false
   if (on === passThrough) return
   passThrough = on
   try { WHALE.invoke('set_click_through', { on: on }).catch(function () {}) } catch (err) {}
 }
+// 全局光标 → 窗口内坐标。菜单弹出时窗口临时扩大，root 反向偏移，
+// 窗口原点 = state.left/top - menuGrow.left/top，换算必须带上这个偏移。
+function localOf(p) {
+  return {
+    x: p.x - state.left + (menuGrow ? menuGrow.left : 0),
+    y: p.y - state.top + (menuGrow ? menuGrow.top : 0)
+  }
+}
+// 光标是否压在可交互 UI 上。elementFromPoint 走 CSS pointer-events 规则：
+// 收起的气泡/菜单整体免疫（pointer-events:none），只有展开的气泡形状、
+// 打开的菜单能命中；菜单按钮靠 visible class 显式门控（它常驻 pointer-events:auto）。
+function overUI(lx, ly) {
+  var el = null
+  try { el = document.elementFromPoint(lx, ly) } catch (err) { return false }
+  if (!el || !el.closest) return false
+  return !!(el.closest('.dshwv-bubble') || el.closest('.dshwv-menu') ||
+            el.closest('.dshwv-menu-btn.dshwv-menu-btn-visible'))
+}
+function interactiveCursor(p) {
+  var l = localOf(p)
+  return isWhaleXY(l.x, l.y) || overUI(l.x, l.y)
+}
 setInterval(function () {
   if (!passThrough) return
   WHALE.invoke('cursor_pos').then(function (p) {
-    if (passThrough && isWhaleXY(p.x - state.left, p.y - state.top)) setPassThrough(false)
+    if (passThrough && interactiveCursor(p)) setPassThrough(false)
   }).catch(function () {})
 }, PASSTHROUGH_POLL_MS)
 // 按光标实时位置重判穿透态：气泡/菜单关闭后鼠标可能静止不动，等不到
 // pointermove，不重判就会一直挡点击（启动时也用它兜底）。
 function recheckPassThrough() {
   WHALE.invoke('cursor_pos').then(function (p) {
-    setPassThrough(!isWhaleXY(p.x - state.left, p.y - state.top))
+    setPassThrough(!interactiveCursor(p))
   }).catch(function () {})
 }
 function onDocPointerDown(e) {
@@ -1234,6 +1308,14 @@ function onDocClickStopper(e) {
   try { e.preventDefault(); e.stopPropagation() } catch (err) {}
 }
 document.addEventListener('pointerdown', onDocPointerDown, true)
+// 右键：干掉 webview 默认上下文菜单；压在鲸鱼像素上时弹与托盘同款的原生菜单，
+// 其余位置（气泡/菜单）只压制不弹。空白区处于穿透态收不到事件，天然免疫。
+document.addEventListener('contextmenu', function (e) {
+  try { e.preventDefault(); e.stopPropagation() } catch (err) {}
+  if (isWhaleHit(e)) {
+    try { WHALE.invoke('popup_app_menu').catch(function () {}) } catch (err) {}
+  }
+})
 
 var widgetCursor = ''
 function setWidgetCursor(v) {
@@ -1244,9 +1326,7 @@ function setWidgetCursor(v) {
 }
 function onDocPointerMoveCursor(e) {
   if (drag && drag.active) { setWidgetCursor('grabbing'); return }
-  var el = null
-  try { el = document.elementFromPoint(e.clientX, e.clientY) } catch (err) {}
-  if (el && el.closest && (el.closest('.dshwv-bubble') || el.closest('.dshwv-menu') || el.closest('.dshwv-menu-btn'))) {
+  if (overUI(e.clientX, e.clientY)) {
     setWidgetCursor('')
     menuBtn.classList.add('dshwv-menu-btn-visible')
     setPassThrough(false)
@@ -1354,6 +1434,9 @@ function applyConfig(d) {
   if (d && typeof d.hasBailian === 'boolean') {
     state.hasBailian = d.hasBailian
   }
+  if (d && typeof d.hasSuoxie === 'boolean') {
+    state.hasSuoxie = d.hasSuoxie
+  }
   if (d && typeof d.provider === 'string') {
     state.provider = d.provider
   }
@@ -1364,7 +1447,7 @@ function applyConfig(d) {
 }
 function bootWidget() {
   setupHitTest()
-  // 托盘「刷新余额」/ 设置窗保存凭据后触发响应刷新（H2/L8）
+  // 设置窗保存凭据后触发响应刷新（H2/L8）
   try {
     var evt = window.__TAURI__ && window.__TAURI__.event
     if (evt && typeof evt.listen === 'function') {

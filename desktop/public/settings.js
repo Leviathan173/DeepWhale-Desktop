@@ -12,6 +12,47 @@
   var bailStatus = document.getElementById('bailianstatus')
   var hadBailCookie = null
   var hadBailBody = null
+  var sxTokEl = document.getElementById('suoxie-token')
+  var sxBtn = document.getElementById('autosuoxie')
+  var sxSaveBtn = document.getElementById('savesuoxie')
+  var sxStatus = document.getElementById('suoxiestatus')
+  var hadSxTok = null
+  var sxMsgSeq = 0
+  function sxMsg(t, err) {
+    var seq = ++sxMsgSeq
+    sxStatus.style.color = err ? '#e0433f' : '#2fa24c'
+    sxStatus.textContent = t
+    setTimeout(function () { if (seq === sxMsgSeq) sxStatus.textContent = '' }, 2500)
+  }
+
+  if (sxBtn) {
+    sxBtn.addEventListener('click', function () {
+      sxBtn.disabled = true
+      sxMsg('正在附加调试浏览器…（失败会自动拉起新窗口登录）')
+      TAPI.invoke('capture_suoxie_token').then(function (res) {
+        if (res && res.suoxieToken) {
+          sxTokEl.value = res.suoxieToken
+          hadSxTok = res.suoxieToken
+        }
+        sxMsg('已自动获取并保存梭子蟹 token ✓')
+        refreshBalance()
+      }).catch(function (e) {
+        sxMsg('失败：' + ((e && e.message) || '请尝试手动粘贴'), true)
+      }).finally(function () { sxBtn.disabled = false })
+    })
+  }
+
+  if (sxSaveBtn) {
+    sxSaveBtn.addEventListener('click', function () {
+      sxMsg('正在保存…')
+      TAPI.invoke('save_suoxie_token', {
+        suoxieToken: ((sxTokEl && sxTokEl.value) || '').trim() || hadSxTok
+      }).then(function () {
+        sxMsg('梭子蟹 token 已保存')
+        refreshBalance()
+      }).catch(function () { sxMsg('保存失败', true) })
+    })
+  }
 
   if (bailBtn) {
     bailBtn.addEventListener('click', function () {
@@ -57,7 +98,9 @@
     dsHourlyLimit: document.getElementById('ds-hourly-limit'),
     dsMinBalance: document.getElementById('ds-min-balance'),
     blHourlyPct: document.getElementById('bl-hourly-pct'),
-    blRemainingPct: document.getElementById('bl-remaining-pct')
+    blRemainingPct: document.getElementById('bl-remaining-pct'),
+    sxHourlyLimit: document.getElementById('sx-hourly-limit'),
+    sxMinBalance: document.getElementById('sx-min-balance')
   }
   var notifyStatus = document.getElementById('notifystatus')
   var notifyBtn = document.getElementById('savenotify')
@@ -96,8 +139,40 @@
       }).catch(function () { notifyMsg('保存失败', true) })
     })
   }
+  // ---- 附加常驻调试浏览器（三家自动获取共用）：改动即自动保存 ----
+  var dbgAttachEl = document.getElementById('debug-attach')
+  var dbgPortEl = document.getElementById('debug-port')
+  var dbgStatus = document.getElementById('debugstatus')
+  var dbgSeq = 0
+  function dbgMsg(t, err) {
+    var seq = ++dbgSeq
+    if (!dbgStatus) return
+    dbgStatus.style.color = err ? '#e0433f' : '#2fa24c'
+    dbgStatus.textContent = t
+    setTimeout(function () { if (seq === dbgSeq) dbgStatus.textContent = '' }, 2500)
+  }
+  // 串行化：连改勾选+端口时按发出顺序落盘，防旧请求后到覆盖新值
+  var dbgChain = Promise.resolve()
+  function saveDebugPrefs() {
+    var port = parseInt(dbgPortEl && dbgPortEl.value, 10)
+    port = isFinite(port) && port >= 1 && port <= 65535 ? port : 9222
+    if (dbgPortEl) dbgPortEl.value = port
+    var payload = { attach: !!(dbgAttachEl && dbgAttachEl.checked), port: port }
+    dbgChain = dbgChain
+      .then(function () { return TAPI.invoke('set_debug_prefs', payload) })
+      .then(function () { dbgMsg('已保存') })
+      .catch(function () { dbgMsg('保存失败', true) })
+  }
+  if (dbgAttachEl) dbgAttachEl.addEventListener('change', saveDebugPrefs)
+  if (dbgPortEl) dbgPortEl.addEventListener('change', saveDebugPrefs)
+
   TAPI.invoke('get_config')
-    .then(function (cfg) { if (cfg) fillNotify(cfg) })
+    .then(function (cfg) {
+      if (!cfg) return
+      fillNotify(cfg)
+      if (dbgAttachEl) dbgAttachEl.checked = !!cfg.debugAttach
+      if (dbgPortEl) dbgPortEl.value = cfg.debugPort || 9222
+    })
     .catch(function () {})
 
   var tokMsgSeq = 0
@@ -165,6 +240,7 @@
       if (c.platformToken) { tokEl.value = c.platformToken; hadToken = c.platformToken }
       if (c.bailianCookie && bailCookEl) { bailCookEl.value = c.bailianCookie; hadBailCookie = c.bailianCookie }
       if (c.bailianPostData && bailBodyEl) { bailBodyEl.value = c.bailianPostData; hadBailBody = c.bailianPostData }
+      if (c.suoxieToken && sxTokEl) { sxTokEl.value = c.suoxieToken; hadSxTok = c.suoxieToken }
     }
   }
   TAPI.invoke('load_credentials')
@@ -429,8 +505,9 @@
       d.textContent = t
       nav.appendChild(d)
     }
-    function link(label, target) {
+    function link(label, target, sub) {
       var a = document.createElement('a')
+      if (sub) a.className = 'sub'
       a.textContent = label
       a.addEventListener('click', function () {
         var el = typeof target === 'string' ? document.getElementById(target) : target
@@ -442,7 +519,9 @@
     }
     title('设置')
     link('凭据设置', 'sec-creds')
-    link('百炼令牌套餐', 'sec-bailian')
+    link('DeepSeek', 'sec-creds', true)
+    link('百炼令牌套餐', 'sec-bailian', true)
+    link('梭子蟹中转站', 'sec-suoxie', true)
     link('余额/花费通知', 'sec-notify')
     link('用量计价', 'sec-pricing')
     link('关于与更新', 'sec-update')
@@ -621,10 +700,22 @@
   // 托盘「检查更新」：事件/启动两条路各自原子取挂起标志，谁取到谁触发（事件丢失由启动 take 兜底，无竞态）
   function takeAndCheck() {
     TAPI.invoke('take_check_update')
-      .then(function (on) { if (on) doCheck() })
+      .then(function (on) {
+        if (!on) return
+        // 滚到「关于与更新」，否则状态文字在屏幕外更新，用户看不见发生了什么
+        var el = document.getElementById('sec-update')
+        if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' })
+        doCheck()
+      })
       .catch(function () {})
   }
   var upEvt = window.__TAURI__ && window.__TAURI__.event
-  if (upEvt) upEvt.listen('check-update', takeAndCheck)
+  if (upEvt) {
+    upEvt.listen('check-update', takeAndCheck)
+    upEvt.listen('scroll-to-creds', function () {
+      var el = document.getElementById('sec-creds')
+      if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    })
+  }
   takeAndCheck()
 })()
