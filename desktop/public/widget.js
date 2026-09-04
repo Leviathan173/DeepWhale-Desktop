@@ -1461,6 +1461,27 @@ function bootWidget() {
           refresh(true)
         })
       })
+      // 梭子蟹福利自动化结果：成功播报；失败每天只提醒一次（循环每小时会重试）
+      var lastWelfareFail = null
+      evt.listen('suoxie-welfare', function (e) {
+        var d = e && e.payload
+        if (!d) return
+        if (d.ok) {
+          var okLines = [
+            { t: '梭子蟹福利', s: 'A', c: '' },
+            { t: String(d.message || '已完成'), s: 'B', c: '#2fa24c', w: true }
+          ]
+          if (d.date) okLines.push({ t: '明天见~', s: 'C', c: '' })
+          showNotifBubble(okLines)
+          refresh(true)
+        } else if (d.date && lastWelfareFail !== d.date) {
+          lastWelfareFail = d.date
+          showNotifBubble([
+            { t: '梭子蟹福利失败', s: 'A', c: '#e0433f' },
+            { t: String(d.error || '未知错误'), s: 'C', c: '#e0433f', w: true }
+          ])
+        }
+      })
     }
   } catch (err) {}
   // 记下窗口当前逻辑坐标/尺寸（boot 时 Rust 已按配置 scale 摆好），

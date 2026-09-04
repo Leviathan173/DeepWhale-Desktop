@@ -212,7 +212,7 @@ fn parse_bailian_subscription(body: &Value) -> Value {
 }
 
 /// 数值字段可能是 JSON number 或数字字符串（毫秒时间戳尤其常见），统一转 f64。
-fn num_or_str(v: &Value) -> Option<f64> {
+pub(crate) fn num_or_str(v: &Value) -> Option<f64> {
     v.as_f64()
         .or_else(|| v.as_str().and_then(|s| s.trim().parse::<f64>().ok()))
 }
@@ -232,13 +232,13 @@ fn page_cost(items: &[Value]) -> f64 {
 }
 
 /// 梭子蟹「今日」= 服务器按 Asia/Shanghai 判定，硬编码 +8 与看板对齐。
-fn suoxie_today() -> String {
+pub(crate) fn suoxie_today() -> String {
     let now = time::OffsetDateTime::now_utc() + time::Duration::hours(8);
     let d = now.date();
     format!("{:04}-{:02}-{:02}", d.year(), d.month() as u8, d.day())
 }
 
-fn suoxie_headers(req: reqwest::RequestBuilder, auth: &str) -> reqwest::RequestBuilder {
+pub(crate) fn suoxie_headers(req: reqwest::RequestBuilder, auth: &str) -> reqwest::RequestBuilder {
     req.header("authorization", auth)
         .header("x-user-ui-request", "1")
         .header("referer", "https://suoxie.codes/dashboard")

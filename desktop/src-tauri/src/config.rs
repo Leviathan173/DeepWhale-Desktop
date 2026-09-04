@@ -99,6 +99,18 @@ pub struct AppConfig {
     /// 梭子蟹中转站（suoxie.codes）登录 JWT（Bearer，约 24h 过期需重抓）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub suoxie_token: Option<String>,
+    /// 梭子蟹中转站 API Key（sk-，签到前凑「当日一次成功调用」用）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suoxie_api_key: Option<String>,
+    /// 每日福利自动化开关：签到+抽奖（凭据齐全才会实际跑）。
+    #[serde(default = "default_true")]
+    pub suoxie_welfare: bool,
+    /// 凑调用用的模型名（默认 luna，最便宜）。
+    #[serde(default = "default_welfare_model")]
+    pub suoxie_welfare_model: String,
+    /// 内部状态：福利流程上次完成的日期（Asia/Shanghai，避免当日重复跑）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suoxie_welfare_date: Option<String>,
     /// 自动获取凭据时优先附加常驻调试浏览器（--remote-debugging-port 启动），失败再拉起新窗口。
     #[serde(default)]
     pub debug_attach: bool,
@@ -145,6 +157,10 @@ fn default_debug_port() -> u16 {
     9222
 }
 
+fn default_welfare_model() -> String {
+    "luna".to_string()
+}
+
 /// 展示供应商枚举归一：未知值一律回 deepseek。
 pub fn norm_provider(p: &str) -> &'static str {
     match p {
@@ -167,6 +183,10 @@ impl Default for AppConfig {
             bailian_cookie: None,
             bailian_post_data: None,
             suoxie_token: None,
+            suoxie_api_key: None,
+            suoxie_welfare: true,
+            suoxie_welfare_model: default_welfare_model(),
+            suoxie_welfare_date: None,
             debug_attach: false,
             debug_port: default_debug_port(),
             opencode_db: None,
@@ -187,6 +207,9 @@ impl AppConfig {
         self.sound_set = sound_set(&self.sound_set).to_string();
         self.usage_mode = normalize(&self.usage_mode).to_string();
         self.provider = norm_provider(&self.provider).to_string();
+        if self.suoxie_welfare_model.trim().is_empty() {
+            self.suoxie_welfare_model = default_welfare_model();
+        }
         self
     }
 }
@@ -265,6 +288,37 @@ pub fn write_suoxie_token(dir: &Path, token: Option<String>) {
     cfg.suoxie_token = token
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
+    write_file(dir, &cfg);
+}
+
+/// 只改梭子蟹福利配置。api_key / model 留空 = 保留原值（缺省 luna 由 normalized 兜底）。
+pub fn write_suoxie_welfare(
+    dir: &Path,
+    api_key: Option<String>,
+    enabled: bool,
+    model: Option<String>,
+) {
+    let mut cfg = read(dir);
+    if let Some(k) = api_key
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+    {
+        cfg.suoxie_api_key = Some(k);
+    }
+    cfg.suoxie_welfare = enabled;
+    if let Some(m) = model
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+    {
+        cfg.suoxie_welfare_model = m;
+    }
+    write_file(dir, &cfg.normalized());
+}
+
+/// 只改福利完成日期标记（内部状态）。
+pub fn write_suoxie_welfare_date(dir: &Path, date: Option<String>) {
+    let mut cfg = read(dir);
+    cfg.suoxie_welfare_date = date.filter(|s| !s.trim().is_empty());
     write_file(dir, &cfg);
 }
 
