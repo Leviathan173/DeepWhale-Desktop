@@ -40,6 +40,11 @@
       color: #203170;
       background: #fff;
     }
+    /* 勾选框不吃文本框的 padding/border/width:100%（福利、调试、计价表三处共用） */
+    input[type="checkbox"], input[type="radio"] {
+      width: auto; flex: 0 0 auto; padding: 0; margin: 0;
+      border: none; border-radius: 0; background: none; accent-color: #203170;
+    }
     .hint { font-size: 12px; color: #9fb0d9; margin: 4px 0 10px; line-height: 1.5; }
     .hint code { background: rgba(32,49,112,.08); padding: 1px 4px; border-radius: 4px; }
     textarea {
@@ -185,8 +190,28 @@
           <span id="suoxiestatus"></span>
         </div>
 
+        <div class="hint">
+          签到要求<b>当天至少一次成功的中转 API 调用</b>；不满足时小鲸鱼自动用下面的模型发一条最小请求
+          （<code>hi</code> + 1 token 输出，花费可忽略），再签到、免费抽奖、补签漏签日（恢复连签宝箱）。
+          按北京时区每天至多跑一次，失败每小时自动重试。<br>
+          API Key 在 suoxie.codes 控制台「令牌/Keys」页创建，与上面的登录 JWT 不同。
+        </div>
+        <div class="row" style="margin-top:6px">
+          <input id="suoxie-welfare" type="checkbox" />
+          <label for="suoxie-welfare" style="margin:0;white-space:nowrap">每日自动签到 + 抽奖</label>
+        </div>
+        <label for="suoxie-api-key">梭子蟹 API Key（sk- 开头；留空=保留原值）</label>
+        <input id="suoxie-api-key" type="password" placeholder="sk-..." autocomplete="off" />
+        <label for="suoxie-welfare-model">凑调用模型（与控制台模型 ID 一致，默认 luna）</label>
+        <input id="suoxie-welfare-model" type="text" placeholder="luna" autocomplete="off" />
+        <div class="row">
+          <button id="savewelfare">保存福利设置</button>
+          <button id="runwelfare" class="ghost">立即执行</button>
+          <span id="welfarestatus"></span>
+        </div>
+
         <div class="row" style="margin-top:14px">
-          <input id="debug-attach" type="checkbox" style="width:auto;flex:0 0 auto" />
+          <input id="debug-attach" type="checkbox" />
           <label for="debug-attach" style="margin:0;white-space:nowrap">附加调试浏览器</label>
           <input id="debug-port" type="number" min="1" max="65535" step="1" placeholder="9222" style="width:92px;flex:0 0 auto" />
           <span id="debugstatus"></span>

@@ -8,6 +8,7 @@ mod config;
 mod login;
 mod opencode;
 mod pricing;
+mod welfare;
 
 use std::time::Duration;
 
@@ -42,6 +43,8 @@ fn main() {
             // 右键鲸鱼弹的原生菜单：与托盘同一套三项，独立 id 前缀，见 handle_menu_event
             app.manage(build_app_menu(app.handle(), "popup_")?);
             create_tray(app)?;
+            // 梭子蟹每日福利（签到+抽奖）后台循环：凭据不全/开关关闭时循环体空转。
+            tauri::async_runtime::spawn(welfare::daily_loop(app.handle().clone()));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -54,6 +57,8 @@ fn main() {
             save_bailian_credentials,
             capture_suoxie_token,
             save_suoxie_token,
+            save_suoxie_welfare,
+            run_suoxie_welfare,
             get_usage_providers,
             set_usage_providers,
             auto_discover_pricing,
@@ -258,6 +263,10 @@ fn get_config(app: tauri::AppHandle) -> Value {
         "provider": cfg.provider,
         "hasBailian": cfg.bailian_cookie.is_some() && cfg.bailian_post_data.is_some(),
         "hasSuoxie": cfg.suoxie_token.is_some(),
+        "hasSuoxieApiKey": cfg.suoxie_api_key.is_some(),
+        "suoxieWelfare": cfg.suoxie_welfare,
+        "suoxieWelfareModel": cfg.suoxie_welfare_model,
+        "suoxieWelfareDate": cfg.suoxie_welfare_date,
         "dsHourlyLimit": cfg.ds_hourly_limit,
         "dsMinBalance": cfg.ds_min_balance,
         "blHourlyPct": cfg.bl_hourly_pct,
@@ -401,6 +410,7 @@ fn load_credentials(app: tauri::AppHandle) -> Value {
         "bailianCookie": cfg.bailian_cookie,
         "bailianPostData": cfg.bailian_post_data,
         "suoxieToken": cfg.suoxie_token,
+        "suoxieApiKey": cfg.suoxie_api_key,
     })
 }
 
@@ -477,6 +487,28 @@ fn save_suoxie_token(app: tauri::AppHandle, suoxie_token: Option<String>) -> Val
     let token = suoxie_token.filter(|s| !s.trim().is_empty()).or(keep);
     config::write_suoxie_token(dir, token);
     json!({ "ok": true })
+}
+
+/// 梭子蟹福利：保存 API Key / 自动开关 / 凑调用模型（key/模型留空 = 保留原值）。
+#[tauri::command]
+fn save_suoxie_welfare(
+    app: tauri::AppHandle,
+    suoxie_api_key: Option<String>,
+    suoxie_welfare: Option<bool>,
+    suoxie_welfare_model: Option<String>,
+) -> Value {
+    let st = app.state::<AppState>();
+    let _g = st.cfg.lock().unwrap_or_else(|e| e.into_inner());
+    let keep = config::read(&st.dir).suoxie_welfare;
+    let enabled = suoxie_welfare.unwrap_or(keep);
+    config::write_suoxie_welfare(&st.dir, suoxie_api_key, enabled, suoxie_welfare_model);
+    json!({ "ok": true, "suoxieWelfare": enabled })
+}
+
+/// 手动跑一遍福利流程（设置页「立即执行」；与后台循环同一实现）。
+#[tauri::command]
+async fn run_suoxie_welfare(app: tauri::AppHandle) -> Result<Value, String> {
+    welfare::execute(&app).await
 }
 
 /// 读取计价表（未配置时返回内置默认表，供设置页编辑）。

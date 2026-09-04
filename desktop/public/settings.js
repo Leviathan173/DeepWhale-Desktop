@@ -54,6 +54,53 @@
     })
   }
 
+  // ---- 梭子蟹每日福利（签到+抽奖自动化）----
+  var sxKeyEl = document.getElementById('suoxie-api-key')
+  var sxAutoEl = document.getElementById('suoxie-welfare')
+  var sxModelEl = document.getElementById('suoxie-welfare-model')
+  var wfSaveBtn = document.getElementById('savewelfare')
+  var wfRunBtn = document.getElementById('runwelfare')
+  var wfStatus = document.getElementById('welfarestatus')
+  var hadSxKey = null
+  var wfSeq = 0
+  function wfMsg(t, err, keep) {
+    var seq = ++wfSeq
+    if (!wfStatus) return
+    wfStatus.style.color = err ? '#e0433f' : '#2fa24c'
+    wfStatus.textContent = t
+    if (!keep) setTimeout(function () { if (seq === wfSeq) wfStatus.textContent = '' }, 4000)
+  }
+  function shToday() { return new Date(Date.now() + 8 * 3600e3).toISOString().slice(0, 10) }
+  function wfApplyCfg(cfg) {
+    if (!cfg) return
+    if (sxAutoEl) sxAutoEl.checked = cfg.suoxieWelfare !== false
+    if (sxModelEl && !sxModelEl.value) sxModelEl.value = cfg.suoxieWelfareModel || ''
+    wfMsg(cfg.suoxieWelfareDate === shToday() ? '今日福利已完成 ✓' : '今日福利未完成', false, true)
+  }
+  if (wfSaveBtn) {
+    wfSaveBtn.addEventListener('click', function () {
+      TAPI.invoke('save_suoxie_welfare', {
+        suoxieApiKey: ((sxKeyEl && sxKeyEl.value) || '').trim() || hadSxKey,
+        suoxieWelfare: !!(sxAutoEl && sxAutoEl.checked),
+        suoxieWelfareModel: ((sxModelEl && sxModelEl.value) || '').trim() || null
+      }).then(function (r) {
+        wfMsg('福利设置已保存' + (r && r.suoxieWelfare ? '（自动开启）' : ''))
+      }).catch(function () { wfMsg('保存失败', true) })
+    })
+  }
+  if (wfRunBtn) {
+    wfRunBtn.addEventListener('click', function () {
+      wfRunBtn.disabled = true
+      wfMsg('执行中…（可能需等约 15s 记账生效）', false, true)
+      TAPI.invoke('run_suoxie_welfare').then(function (r) {
+        wfMsg(((r && r.message) || '完成') + ' ✓')
+        TAPI.invoke('get_config').then(wfApplyCfg).catch(function () {})
+      }).catch(function (e) {
+        wfMsg('失败：' + ((e && e.message) || e), true)
+      }).finally(function () { wfRunBtn.disabled = false })
+    })
+  }
+
   if (bailBtn) {
     bailBtn.addEventListener('click', function () {
       bailBtn.disabled = true
@@ -172,6 +219,7 @@
       fillNotify(cfg)
       if (dbgAttachEl) dbgAttachEl.checked = !!cfg.debugAttach
       if (dbgPortEl) dbgPortEl.value = cfg.debugPort || 9222
+      wfApplyCfg(cfg)
     })
     .catch(function () {})
 
@@ -241,6 +289,7 @@
       if (c.bailianCookie && bailCookEl) { bailCookEl.value = c.bailianCookie; hadBailCookie = c.bailianCookie }
       if (c.bailianPostData && bailBodyEl) { bailBodyEl.value = c.bailianPostData; hadBailBody = c.bailianPostData }
       if (c.suoxieToken && sxTokEl) { sxTokEl.value = c.suoxieToken; hadSxTok = c.suoxieToken }
+      if (c.suoxieApiKey && sxKeyEl) { sxKeyEl.value = c.suoxieApiKey; hadSxKey = c.suoxieApiKey }
     }
   }
   TAPI.invoke('load_credentials')
