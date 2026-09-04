@@ -1,7 +1,7 @@
 {
   "name": "deepwhale-desktop",
   "private": true,
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "DeepSeek 余额小鲸鱼桌面版（Tauri v2）",
   "type": "module",
   "scripts": {
