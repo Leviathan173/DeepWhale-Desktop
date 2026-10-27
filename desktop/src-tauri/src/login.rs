@@ -41,6 +41,7 @@ fn spawn_browser(url: &str) -> Result<(Child, u16, std::path::PathBuf), String> 
         .ok_or("未找到 Edge/Chrome，请按对应平台提示手动复制登录信息")?;
 
     let child = Command::new(exe)
+        .arg("--remote-debugging-address=127.0.0.1")
         .arg(format!("--remote-debugging-port={port}"))
         // 只放行本机调试页 origin，避免任意网站通过 `*` 嗅探登录态
         .arg(format!(
@@ -509,6 +510,16 @@ async fn find_or_open_page(
     None
 }
 
+async fn cdp_reachable(client: &reqwest::Client, port: u16) -> bool {
+    client
+        .get(json_url(port))
+        .timeout(Duration::from_secs(2))
+        .send()
+        .await
+        .map(|r| r.status().is_success())
+        .unwrap_or(false)
+}
+
 /// 附加抓取公共段：找/开页面 → CDP reload 逼页面重发请求 → 嗅 Authorization 头。
 async fn attach_sniff_auth(
     client: &reqwest::Client,
@@ -541,12 +552,86 @@ async fn attach_sniff_auth(
     }
 }
 
+/// 部分新版前端不再在 reload 后重新发送带 Authorization 的 API 请求，
+/// 而是从 localStorage/sessionStorage 取 JWT。仅在梭子蟹页面使用此兜底。
+async fn read_suoxie_storage_token(ws_url: &str) -> Option<String> {
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::connect_async;
+    use tokio_tungstenite::tungstenite::Message;
+
+    let (mut ws, _) = connect_async(ws_url).await.ok()?;
+    ws.send(Message::Text(
+        json!({
+            "id": 1,
+            "method": "Runtime.evaluate",
+            "params": {
+                "returnByValue": true,
+                "expression": "JSON.stringify(Object.assign({}, localStorage, sessionStorage))"
+            }
+        })
+        .to_string()
+        .into(),
+    ))
+    .await
+    .ok()?;
+
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while Instant::now() < deadline {
+        let msg = tokio::time::timeout(Duration::from_millis(500), ws.next())
+            .await
+            .ok()??
+            .ok()?;
+        let Message::Text(text) = msg else { continue };
+        let value: Value = serde_json::from_str(&text).ok()?;
+        if value.get("id").and_then(|v| v.as_u64()) != Some(1) {
+            continue;
+        }
+        let raw = value
+            .pointer("/result/result/value")
+            .and_then(|v| v.as_str())?;
+        let storage: Value = serde_json::from_str(raw).ok()?;
+        fn find_jwt(value: &Value) -> Option<String> {
+            if let Some(raw) = value.as_str() {
+                let token = raw
+                    .trim()
+                    .strip_prefix("Bearer ")
+                    .unwrap_or(raw.trim())
+                    .trim();
+                if token.split('.').count() == 3 && token.len() > 30 {
+                    return Some(token.to_string());
+                }
+                if let Ok(nested) = serde_json::from_str::<Value>(token) {
+                    if let Some(found) = find_jwt(&nested) {
+                        return Some(found);
+                    }
+                }
+            }
+            match value {
+                Value::Array(items) => items.iter().find_map(find_jwt),
+                Value::Object(items) => items.values().find_map(find_jwt),
+                _ => None,
+            }
+        }
+        if let Some(token) = find_jwt(&storage) {
+            return Some(token);
+        }
+        return None;
+    }
+    None
+}
+
 /// 梭子蟹（suoxie.codes）：attach=Some(端口) 时优先附加常驻调试 Edge（复用登录态），
 /// 不可用/抓取失败再回退拉起新浏览器登录。
 pub async fn capture_suoxie_token(attach: Option<u16>) -> Result<String, String> {
     let client = reqwest::Client::new();
     // 1. 附加常驻调试浏览器
     if let Some(port) = attach {
+        let attached_browser = cdp_reachable(&client, port).await;
+        if let Some(ws) = find_or_open_page(&client, port, "suoxie.codes", SUOXIE_DASHBOARD).await {
+            if let Some(token) = read_suoxie_storage_token(&ws).await {
+                return Ok(token);
+            }
+        }
         if let Some(t) = attach_sniff_auth(
             &client,
             port,
@@ -558,6 +643,12 @@ pub async fn capture_suoxie_token(attach: Option<u16>) -> Result<String, String>
         .await
         {
             return Ok(t);
+        }
+        if attached_browser {
+            return Err(
+                "已连接调试浏览器，但梭子蟹未发现登录凭证；请在该 Edge 中完成登录后重试"
+                    .to_string(),
+            );
         }
     }
     // 2. 回退：独立临时 profile 新浏览器 + 登录嗅探
@@ -638,6 +729,14 @@ mod tests {
             esc_cdp_url("https://suoxie.codes/dashboard"),
             "https://suoxie.codes/dashboard"
         );
+    }
+
+    #[test]
+    fn jwt_shape_requires_three_parts_and_length() {
+        let jwt = "a".repeat(31) + ".b.c";
+        assert_eq!(jwt.split('.').count(), 3);
+        assert!(jwt.len() > 30);
+        assert!("short".len() <= 30);
     }
 
     #[test]

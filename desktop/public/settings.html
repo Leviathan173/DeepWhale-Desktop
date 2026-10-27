@@ -218,7 +218,7 @@
         </div>
         <div class="hint">
           勾选后各家「自动获取」均优先附加该端口的常驻调试浏览器（复用登录态），失败自动回退新窗口。
-          Edge 需以 <code>--remote-debugging-port=端口 --user-data-dir=独立目录</code> 启动。
+          Edge 可使用独立的 <code>debugprofile</code> 目录并以 <code>--remote-debugging-port=9222 --user-data-dir="%LOCALAPPDATA%\DeepWhale\debugprofile" --remote-debugging-address=127.0.0.1</code> 启动。CDP 仅允许本机访问；不要将端口转发或开放到局域网。
         </div>
       </section>
 

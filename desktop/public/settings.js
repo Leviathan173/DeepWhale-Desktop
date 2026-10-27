@@ -223,6 +223,24 @@
     })
     .catch(function () {})
 
+  var credentialRefreshSeen = false
+  if (window.__TAURI__ && window.__TAURI__.event && typeof window.__TAURI__.event.listen === 'function') {
+    window.__TAURI__.event.listen('credential-refresh-status', function (event) {
+      var data = event && event.payload || {}
+      if (data.status === 'failed') {
+        var msg = data.error || '凭据刷新失败，请检查调试浏览器登录状态'
+        if (data.provider === 'bailian') bailMsg('自动刷新失败：' + msg, true)
+        else if (data.provider === 'suoxie') sxMsg('自动刷新失败：' + msg, true)
+        else tokMsg('自动刷新失败：' + msg, true)
+      } else if (!credentialRefreshSeen) {
+        credentialRefreshSeen = true
+        if (data.provider === 'bailian') bailMsg('登录凭据已自动更新')
+        else if (data.provider === 'suoxie') sxMsg('登录凭据已自动更新')
+        else tokMsg('登录凭据已自动更新')
+      }
+    })
+  }
+
   var tokMsgSeq = 0
   function tokMsg(t, err) {
     var seq = ++tokMsgSeq
