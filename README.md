@@ -68,8 +68,19 @@ npm run tauri build   # 产出 Windows 安装包（.msi/.exe/.nsis.zip + latest.
 
 | 供应商 | 说明 |
 | ------ | ---- |
-| DeepSeek | 填入 `DEEPSEEK_API_KEY`（按量余额）。平台会话令牌可点「自动抓取」，用独立浏览器 + CDP 嗅探登录态获取 |
-| 百炼 TokenPlan | 控制台内部接口无公开 API-key 入口。设置页点「自动抓取百炼登录态」，拉起独立浏览器吸取已登录浏览器的 Cookie + 请求体；凭据过期后重新抓取即可 |
+| DeepSeek | 填入 `DEEPSEEK_API_KEY`（按量余额）。平台会话令牌可点「自动抓取」获取；令牌被服务拒绝时会尝试经调试浏览器更新 |
+| 百炼 TokenPlan | 控制台内部接口无公开 API-key 入口。设置页可抓取登录 Cookie + 请求体；检测到明确未登录时会尝试经调试浏览器更新 |
+| 梭子蟹 | 检测到登录 JWT 返回 HTTP 401/403 时会尝试经调试浏览器更新 |
+
+### 日常 Edge 调试浏览器
+
+建议使用单独的 Edge 用户数据目录（不要给正在运行的默认 Edge profile 加参数，也不要将 CDP 端口暴露到网络）。创建 `%LOCALAPPDATA%\DeepWhale\debugprofile`，然后用以下命令启动：
+
+```powershell
+& "$env:ProgramFiles(x86)\Microsoft\Edge\Application\msedge.exe" --remote-debugging-address=127.0.0.1 --remote-debugging-port=9222 --user-data-dir="$env:LOCALAPPDATA\DeepWhale\debugprofile" --no-first-run
+```
+
+如 Edge 安装在其他位置，请替换可执行文件路径。首次在此独立浏览器中登录日常需要的服务；保持该 Edge 进程运行。在小鲸鱼「设置 → 凭据」勾选「附加调试浏览器」、端口填 `9222`。可将命令保存为快捷方式目标或 `.cmd` 启动文件。调试 profile 本身保存登录态，应与密码管理器同等保护。
 
 ### 今日已用（本地记账）
 
@@ -123,7 +134,7 @@ cargo test                                       # 16 项单元测试
 
 ## 常见问题
 
-- **百炼显示 `--`**：凭证过期/未抓取，去托盘「设置 → 百炼」重新自动抓取。
+- **凭证失效提示**：应用会在服务明确拒绝登录态时自动通过已配置的调试浏览器尝试更新；若更新失败，请打开 Edge 的 `debugprofile` 检查是否仍登录/需要人工验证，然后手动点对应的「自动获取」。
 - **今日已用为 0**：数据源无当日会话，或模型未匹配计价表；仅 DeepSeek/Claude/Qwen 系有内置兜底价。
 - **没有声音**：音效 mp3 缺失时静默降级，忽略即可。
 - **窗口不见**：点击托盘图标菜单显示。

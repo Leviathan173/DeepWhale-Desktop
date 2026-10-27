@@ -125,7 +125,8 @@ async fn fetch_bailian_subscription(
     post_data: &str,
 ) -> Result<Value, String> {
     let url = format!(
-        "{BAILIAN_API_URL}?action=BroadScopeAspnGateway&product=sfm_bailian&api=zeldaHttp.apikeyMgr./tokenplan/personal/api/v2/usage&_v=undefined"
+        // 控制台当前发送 `_v=` 空值；`undefined` 会被部分网关当成不同请求。
+        "{BAILIAN_API_URL}?action=BroadScopeAspnGateway&product=sfm_bailian&api=zeldaHttp.apikeyMgr./tokenplan/personal/api/v2/usage&_v="
     );
     let ress = client
         .post(&url)
@@ -134,7 +135,7 @@ async fn fetch_bailian_subscription(
         .header("origin", "https://bailian.console.aliyun.com")
         .header(
             "referer",
-            "https://bailian.console.aliyun.com/cn-beijing?tab=plan",
+            "https://bailian.console.aliyun.com/cn-beijing/subscription/token-plan/personal",
         )
         .body(post_data.to_string())
         .timeout(Duration::from_secs(10))
@@ -172,7 +173,11 @@ fn parse_bailian_subscription(body: &Value) -> Value {
             .and_then(|v| v.as_str())
             .unwrap_or("未登录或接口异常")
             .to_string();
-        return json!({ "ok": false, "error": msg });
+        let lower = msg.to_ascii_lowercase();
+        let auth_expired = lower.contains("notlogined")
+            || lower.contains("not logged")
+            || lower.contains("未登录");
+        return json!({ "ok": false, "error": msg, "credentialExpired": auth_expired });
     }
 
     // 钻进 DataV2.data.data 取真实业务字段
@@ -183,13 +188,19 @@ fn parse_bailian_subscription(body: &Value) -> Value {
 
     let mut reset_at: Option<f64> = None;
     let mut percent_str: Option<String> = None;
+    let mut period = "subscription";
     let mut remaining_days: Option<f64> = None;
     let mut end_time: Option<f64> = None;
 
     if let Some(inner) = inner {
-        if let Some(p) = inner.get("per1WeekPercentage").and_then(|v| v.as_f64()) {
+        if let Some(p) = inner.get("per1MonthPercentage").and_then(|v| v.as_f64()) {
+            percent_str = Some(format!("{:.1}%", (1.0 - p) * 100.0));
+            reset_at = inner.get("per1MonthResetTime").and_then(num_or_str);
+            period = "month";
+        } else if let Some(p) = inner.get("per1WeekPercentage").and_then(|v| v.as_f64()) {
             percent_str = Some(format!("{:.1}%", (1.0 - p) * 100.0));
             reset_at = inner.get("per1WeekResetTime").and_then(num_or_str);
+            period = "week";
         }
         if let Some(d) = inner.get("remainingDays").and_then(num_or_str) {
             remaining_days = Some(d);
@@ -204,6 +215,7 @@ fn parse_bailian_subscription(body: &Value) -> Value {
     json!({
         "ok": true,
         "remaining": percent_str,
+        "period": period,
         "resetAt": reset_at,
         "resetAtMs": reset_at,
         "remainingDays": remaining_days,
@@ -405,6 +417,7 @@ pub async fn get_balance_payload(state: &AppState) -> Value {
     }
 
     // 实时·令牌（默认）：有令牌且抓取成功才用实时值；无令牌/失败 → 回退小鲸鱼记账。
+    let mut usage_credential_expired = false;
     let realtime = if config::normalize(&cfg.usage_mode) == "token" {
         match cfg.platform_token.as_deref() {
             Some(token) => match fetch_today_usage(&state.client, token).await {
@@ -415,6 +428,7 @@ pub async fn get_balance_payload(state: &AppState) -> Value {
                 }
                 Err(e) => {
                     eprintln!("[balance] 令牌用量抓取失败，回退小鲸鱼记账: {e}");
+                    usage_credential_expired = e.contains("http 401") || e.contains("http 403");
                     false
                 }
             },
@@ -425,7 +439,8 @@ pub async fn get_balance_payload(state: &AppState) -> Value {
     };
     if !realtime {
         // local_usage 做阻塞式 SQLite/文件读取（opencode.db + Claude jsonl），挪出 async 执行器
-        match tokio::task::spawn_blocking(move || local_usage(&cfg)).await {
+        let local_cfg = cfg.clone();
+        match tokio::task::spawn_blocking(move || local_usage(&local_cfg)).await {
             Ok(Some(cost)) => {
                 payload["todayUsage"] = json!(cost);
                 payload["usageMode"] = json!("opencode");
@@ -438,6 +453,15 @@ pub async fn get_balance_payload(state: &AppState) -> Value {
     // 百炼 TokenPlan（订阅制）与梭子蟹（中转站），收并发任务的尾。
     payload["bailian"] = join_side(bailian_task.take()).await;
     payload["suoxie"] = join_side(suoxie_task.take()).await;
+    let credential_refresh_needed = match cfg.provider.as_str() {
+        "deepseek" => usage_credential_expired,
+        "bailian" => payload["bailian"]["credentialExpired"].as_bool() == Some(true),
+        "suoxie" => payload["suoxie"]["error"]
+            .as_str()
+            .is_some_and(|e| e.contains("http 401") || e.contains("http 403")),
+        _ => false,
+    };
+    payload["credentialRefreshNeeded"] = json!(credential_refresh_needed);
 
     *state.cache.lock().unwrap() = Some(BalanceCache {
         at: std::time::Instant::now(),
@@ -461,6 +485,7 @@ mod tests {
                 payload: json!({"ok": true}),
             })),
             busy: tokio::sync::Mutex::new(()),
+            credential_retry: std::sync::atomic::AtomicBool::new(false),
             cfg: std::sync::Mutex::new(()),
             check_update: std::sync::atomic::AtomicBool::new(false),
         };
@@ -473,6 +498,7 @@ mod tests {
                 payload: json!({"ok": true}),
             })),
             busy: tokio::sync::Mutex::new(()),
+            credential_retry: std::sync::atomic::AtomicBool::new(false),
             cfg: std::sync::Mutex::new(()),
             check_update: std::sync::atomic::AtomicBool::new(false),
         };
@@ -568,6 +594,24 @@ mod tests {
     }
 
     #[test]
+    fn bailian_month_usage_shape_parsed() {
+        let out = parse_bailian_subscription(&json!({
+            "data": {
+                "DataV2": { "data": { "data": {
+                    "per1MonthPercentage": 1.0,
+                    "per1MonthResetTime": 1793462400000i64
+                }, "success": true } },
+                "success": true
+            },
+            "successResponse": true
+        }));
+        assert_eq!(out["ok"], true);
+        assert_eq!(out["remaining"], "0.0%");
+        assert_eq!(out["period"], "month");
+        assert_eq!(out["resetAtMs"], 1793462400000.0);
+    }
+
+    #[test]
     fn bailian_not_logined() {
         let out = parse_bailian_subscription(&json!({
             "code": "200",
@@ -578,6 +622,16 @@ mod tests {
             }
         }));
         assert_eq!(out["ok"], false);
+        assert_eq!(out["credentialExpired"], true);
         assert!(out["error"].as_str().unwrap().contains("NotLogined"));
+    }
+
+    #[test]
+    fn bailian_request_uses_empty_version_parameter() {
+        let url = format!(
+            "{BAILIAN_API_URL}?action=BroadScopeAspnGateway&product=sfm_bailian&api=zeldaHttp.apikeyMgr./tokenplan/personal/api/v2/usage&_v="
+        );
+        assert!(url.ends_with("&_v="));
+        assert!(!url.ends_with("&_v=undefined"));
     }
 }

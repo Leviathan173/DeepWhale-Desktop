@@ -35,6 +35,7 @@ fn main() {
                 client,
                 cache: std::sync::Mutex::new(None),
                 busy: tokio::sync::Mutex::new(()),
+                credential_retry: std::sync::atomic::AtomicBool::new(false),
                 cfg: std::sync::Mutex::new(()),
                 check_update: std::sync::atomic::AtomicBool::new(false),
             });
@@ -245,7 +246,79 @@ async fn get_balance(app: tauri::AppHandle) -> Result<Value, String> {
     if let Some(p) = balance::cached_payload(&state) {
         return Ok(p);
     }
-    Ok(balance::get_balance_payload(&state).await)
+    let mut payload = balance::get_balance_payload(&state).await;
+    if payload["credentialRefreshNeeded"].as_bool() == Some(true)
+        && !state
+            .credential_retry
+            .swap(true, std::sync::atomic::Ordering::Relaxed)
+    {
+        let result = refresh_expired_credentials(&app).await;
+        match result {
+            Ok(()) => {
+                state
+                    .credential_retry
+                    .store(false, std::sync::atomic::Ordering::Relaxed);
+                *state.cache.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                payload = balance::get_balance_payload(&state).await;
+                payload["credentialRefresh"] = json!("refreshed");
+                let provider = config::read(&state.dir).provider;
+                if let Some(win) = app.get_webview_window("settings") {
+                    let _ = win.emit(
+                        "credential-refresh-status",
+                        json!({"status":"refreshed", "provider":provider}),
+                    );
+                }
+            }
+            Err(e) => {
+                payload["credentialRefresh"] = json!("failed");
+                payload["credentialRefreshError"] = json!(e.clone());
+                let provider = config::read(&state.dir).provider;
+                if let Some(win) = app.get_webview_window("settings") {
+                    let _ = win.emit(
+                        "credential-refresh-status",
+                        json!({"status":"failed", "provider":provider, "error":e}),
+                    );
+                }
+            }
+        }
+    }
+    Ok(payload)
+}
+
+async fn refresh_expired_credentials(app: &tauri::AppHandle) -> Result<(), String> {
+    let (provider, attach) = {
+        let state = app.state::<AppState>();
+        let _guard = state.cfg.lock().unwrap_or_else(|e| e.into_inner());
+        let cfg = config::read(&state.dir);
+        (cfg.provider, cfg.debug_attach.then_some(cfg.debug_port))
+    };
+    match provider.as_str() {
+        "deepseek" => {
+            let token = login::capture_platform_token(attach).await?;
+            let state = app.state::<AppState>();
+            let _guard = state.cfg.lock().unwrap_or_else(|e| e.into_inner());
+            let key = config::read(&state.dir).api_key;
+            config::write_credentials(&state.dir, key, Some(token));
+        }
+        "bailian" => {
+            let creds = login::capture_bailian_credentials(attach).await?;
+            let state = app.state::<AppState>();
+            let _guard = state.cfg.lock().unwrap_or_else(|e| e.into_inner());
+            config::write_bailian_credentials(
+                &state.dir,
+                Some(creds.cookie),
+                Some(creds.post_data),
+            );
+        }
+        "suoxie" => {
+            let token = login::capture_suoxie_token(attach).await?;
+            let state = app.state::<AppState>();
+            let _guard = state.cfg.lock().unwrap_or_else(|e| e.into_inner());
+            config::write_suoxie_token(&state.dir, Some(token));
+        }
+        _ => return Err("不支持自动刷新此供应商凭证".to_string()),
+    }
+    Ok(())
 }
 
 #[tauri::command]

@@ -242,7 +242,9 @@ var state = {
   hasBailian: false,
   bailian: null,
   hasSuoxie: false,
-  suoxie: null
+  suoxie: null,
+  credentialRefreshNeeded: false,
+  credentialRefresh: ''
 }
 var busy = false
 var settleTimer = null
@@ -312,6 +314,7 @@ function buildGroup1() {
   if (state.provider === 'bailian') {
     var b = state.bailian
     if (!b || !b.ok) {
+      if (b && b.credentialExpired) return [{ t: '百炼凭据失效', s: 'A', c: '#e0433f' }, null, { t: state.credentialRefresh === 'failed' ? '请登录调试浏览器后重试' : '正在尝试自动更新', s: 'C', c: '' }]
       return [
         { t: '百炼 · 未配置', s: 'A', c: '' },
         null,
@@ -321,7 +324,7 @@ function buildGroup1() {
     // 4 行：加粗标签 / 小字「周剩余额度」 / 剩余百分比 / 重置时间
     return [
       { t: '百炼 TokenPlan', s: 'A', c: '' },
-      { t: '周剩余额度', s: 'S', c: '' },
+      { t: (b.period === 'month' ? '月剩余额度' : '周剩余额度'), s: 'S', c: '' },
       { t: String(b.remaining != null ? b.remaining : '--'), s: 'B', c: '' },
       { t: '重置 ' + fmtReset(b.resetAt), s: 'C', c: '' }
     ]
@@ -329,6 +332,7 @@ function buildGroup1() {
   if (state.provider === 'suoxie') {
     var s = state.suoxie
     if (!s || !s.ok) {
+      if (s && (String(s.error || '').indexOf('HTTP 401') >= 0 || String(s.error || '').indexOf('HTTP 403') >= 0)) return [{ t: '梭子蟹凭据失效', s: 'A', c: '#e0433f' }, null, { t: state.credentialRefresh === 'failed' ? '请登录调试浏览器后重试' : '正在尝试自动更新', s: 'C', c: '' }]
       return [
         { t: '梭子蟹 · 未配置', s: 'A', c: '' },
         null,
@@ -648,6 +652,14 @@ function render() {
       amount = '--'
       hint = state.message ? state.message.slice(0, 14) : '获取失败 · 点击重试'
     } else if (!b || !b.ok) {
+      if (state.credentialRefreshNeeded && (state.provider === 'deepseek' || (b && b.credentialExpired) || (state.suoxie && (String(state.suoxie.error || '').indexOf('HTTP 401') >= 0 || String(state.suoxie.error || '').indexOf('HTTP 403') >= 0)))) {
+        amount = '--'
+        hint = state.credentialRefresh === 'failed' ? '凭据失效 · 请检查调试浏览器登录' : '正在自动更新登录凭据'
+        amountEl.textContent = amount
+        subEl.style.display = 'none'
+        setHint(hint)
+        return
+      }
       amount = '--'
       hint = (b && b.error) ? (b.configured === false ? '未配置百炼 · 请在设置获取' : b.error.slice(0, 14)) : '未配置百炼'
       applyBubbleLines([
@@ -660,7 +672,7 @@ function render() {
       // 百炼气泡 4 行：加粗标签 / 小字「周剩余额度」 / 剩余百分比 / 重置时间
       applyBubbleLines([
         { t: '百炼 TokenPlan', s: 'A', c: '' },
-        { t: '周剩余额度', s: 'S', c: '' },
+        { t: (b.period === 'month' ? '月剩余额度' : '周剩余额度'), s: 'S', c: '' },
         { t: String(b.remaining != null ? b.remaining : '--'), s: 'B', c: '' },
         { t: '重置 ' + fmtReset(b.resetAt), s: 'C', c: '' }
       ])
@@ -762,6 +774,9 @@ function refresh(manual) {
   apiBalance()
     .then(function (data) {
       if (data && data.ok) {
+        state.credentialRefreshNeeded = !!data.credentialRefreshNeeded
+        state.credentialRefresh = data.credentialRefresh || ''
+        if (state.credentialRefresh === 'failed') state.message = data.credentialRefreshError || '凭据刷新失败'
         state.bailian = (data && data.bailian) || null
         state.suoxie = (data && data.suoxie) || null
         // 凭据存在与否以接口返回为准：configured===false 才是「没配置」；
