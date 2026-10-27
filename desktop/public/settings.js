@@ -738,15 +738,14 @@
       upCheckBtn.disabled = true
       var got = 0
       var total = 0
-      // ponytail: 全局 core.invoke 不序列化函数（JSON 丢字段→"missing onEvent"），手动换回调 id，等价官方 JS 插件
-      var tc = window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.transformCallback
-      if (!tc) {
-        upMsg('更新失败：缺少回调桥（__TAURI_INTERNALS__.transformCallback）')
+      var Channel = TAPI.Channel
+      if (!Channel) {
+        upMsg('更新失败：缺少 Tauri Channel 支持')
         upInstallBtn.disabled = false
         upCheckBtn.disabled = false
         return
       }
-      var onEventId = tc(function (ev) {
+      var onEvent = new Channel(function (ev) {
         if (ev.event === 'Started') {
           total = (ev.data && ev.data.contentLength) || 0
           upMsg('下载中 0%')
@@ -759,7 +758,7 @@
       }, false)
       TAPI.invoke('plugin:updater|download_and_install', {
         rid: pendingUpdate.rid,
-        onEvent: onEventId,
+        onEvent: onEvent,
       })
         .then(function () {
           upMsg('安装完成，正在重启…')
