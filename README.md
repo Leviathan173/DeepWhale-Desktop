@@ -16,7 +16,8 @@
   - opencode 记账：读取 `opencode.sqlite` 会话历史
   - Claude Code 记账：读取 `~/.claude/projects/**` 的 jsonl 用量记录
   - 计价表：供应商/模型单价四段拆分（输入/输出/缓存读/缓存写）+ 峰谷两档（周末全天低谷价，2026-08-23 起）；未配置模型自动套内置官方价
-- 🎚️ **汉堡菜单**（悬停鲸鱼出现）：大小缩放、音效切换等
+- 🎚️ **汉堡菜单**（悬停鲸鱼出现）：外观切换（大肥鱼 / 余额鲸鱼）、大小缩放、音效切换等
+- 🐳 **两套外观**：默认「大肥鱼」（鲸鱼娘精灵图，15 个状态动画，随余额状态切换 idle / think / celebrate / error），可一键切回原「余额鲸鱼」；素材离线内嵌，不依赖 DSH 服务
 - 🔊 **音效**：按压/松手音效，三套可选（小黄鸭 / 音效1 / 鲸语，缺失时静默降级）
 - 💬 **随机台词**：点击气泡切换台词段，5 秒自动收起；**碎碎念同步语音配音**（百炼 qwen-audio-3.0-tts-plus 离线生成、内嵌播放）
 - 🧸 **按压 Q 弹**玩偶效果；左吸附水平镜像翻转
@@ -95,7 +96,8 @@ desktop/
 │   ├── index.html           # 主程序入口
 │   ├── widget.js            # 小鲸鱼交互（拖拽/吸附/气泡/供应商轮换）
 │   ├── settings.html        # 设置页
-│   └── settings.js          # 设置页逻辑
+│   ├── settings.js          # 设置页逻辑
+│   └── dsh/                 # 大肥鱼外观素材（第三方，见 dsh/NOTICE.md）
 └── src-tauri/
     ├── src/                 # Rust 后端
     │   ├── main.rs          # 窗口/托盘/命令注册
@@ -122,6 +124,10 @@ cargo run --bin tts_gen            # 幂等：已存在的 mp3 跳过；改文�
 - Key 来源：`--key` > 环境变量 `DASHSCOPE_API_KEY` > opencode `auth.json`/`opencode.json` 里的百炼 key（TokenPlan 网关自动推导 WS 地址；用普通 DashScope Key 复刻/生成时加 `--ws-url wss://dashscope.aliyuncs.com/api-ws/v1/inference`）
 - 当前 `voice` 是「声音复刻」出的专属音色（音色 id 与账号绑定，见阿里云声音复刻文档）。换账号/重做复刻后，把新 `voice_id` 填回 manifest 再重跑生成
 - 改台词文案后，同时更新 `public/widget.js` 里 `MURMUR_B/A/JOKE` 对应文本与语音 id，再重跑生成即可；`cargo test` 会兜底校验 manifest 与资源一一对应
+
+## 大肥鱼外观素材（第三方）
+
+`desktop/public/dsh/` 下的精灵图与 `manifest.json` 取自 [vlln/whale-girl](https://github.com/vlln/whale-girl)（MIT），角色设计署名 ZipZipPipe。许可与署名见 `desktop/public/dsh/NOTICE.md` 与同目录 `LICENSE`，发布包会一并携带。该外观默认启用，可在鲸鱼菜单「外观」切回原素材。
 
 ## 验证
 

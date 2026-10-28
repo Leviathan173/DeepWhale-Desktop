@@ -34,6 +34,16 @@ var SOUND_URLS = { duck: { press: null, release: null }, fx1: { press: null, rel
 var root = document.createElement('div')
 root.className = 'dshwv-root'
 
+var dshStage = document.createElement('div')
+dshStage.className = 'dshwv-dsh-stage'
+var dshSprite = document.createElement('div')
+dshSprite.className = 'dshwv-dsh-sprite'
+var dshPulse = document.createElement('div')
+dshPulse.className = 'dshwv-dsh-pulse'
+dshPulse.innerHTML = '<span class="dshwv-dsh-state"></span><span class="dshwv-dsh-detail"></span>'
+dshStage.appendChild(dshSprite)
+dshStage.appendChild(dshPulse)
+
 var img = document.createElement('img')
 img.className = 'dshwv-img'
 img.src = IMG_URL
@@ -116,6 +126,11 @@ usageSelect.className = 'dshwv-sound'
 usageSelect.appendChild(soundOpt('token', '实时·令牌 (推荐，设置里自动获取)'))
 usageSelect.appendChild(soundOpt('opencode', '小鲸鱼记账 (本地会话按计价表计算)'))
 usageSelect.addEventListener('change', function () { setUsageMode(usageSelect.value) })
+var appearanceSelect = document.createElement('select')
+appearanceSelect.className = 'dshwv-sound'
+appearanceSelect.appendChild(soundOpt('dsh', '大肥鱼'))
+appearanceSelect.appendChild(soundOpt('classic', '余额鲸鱼'))
+appearanceSelect.addEventListener('change', function () { setAppearance(appearanceSelect.value, true) })
 // 启用的供应商列表（按此顺序点击鲸鱼轮换）：deepseek 恒有，百炼/梭子蟹有凭据才加入。
 function providerList() {
   var list = ['deepseek']
@@ -152,6 +167,9 @@ row3.appendChild(volPct)
 var row4 = menuRow()
 row4.appendChild(menuLabel('用量'))
 row4.appendChild(usageSelect)
+var rowAppearance = menuRow()
+rowAppearance.appendChild(menuLabel('外观'))
+rowAppearance.appendChild(appearanceSelect)
 var rowSet = menuRow()
 var setBtn = document.createElement('button')
 setBtn.type = 'button'
@@ -166,6 +184,7 @@ menuBox.appendChild(row1)
 menuBox.appendChild(row2)
 menuBox.appendChild(row3)
 menuBox.appendChild(row4)
+menuBox.appendChild(rowAppearance)
 menuBox.appendChild(rowSet)
 
 var textBox = document.createElement('div')
@@ -216,6 +235,7 @@ body.className = 'dshwv-body'
 body.appendChild(img)
 body.appendChild(bubbleBox)
 root.appendChild(body)
+root.appendChild(dshStage)
 root.appendChild(menuBtn)
 document.body.appendChild(root)
 document.body.appendChild(menuBox)
@@ -238,6 +258,7 @@ var state = {
   isPeak: false,
   status: 'loading',
   message: '',
+  appearance: 'dsh',
   provider: 'deepseek',
   hasBailian: false,
   bailian: null,
@@ -245,6 +266,57 @@ var state = {
   suoxie: null,
   credentialRefreshNeeded: false,
   credentialRefresh: ''
+}
+var dshAppearance = true
+var dshAnimTimer = null
+var dshFrame = 0
+var dshManifest = null
+var dshPlaying = ''
+var DSH_STATE_LABELS = { loading: '正在连接', changing: '余额变化', ok: '准备好了', error: '请求失败' }
+function dshAsset(name) { return 'dsh/whale-girl/' + name + '.png' }
+function dshState() {
+  if (state.status === 'error') return 'error'
+  if (state.status === 'loading') return 'think'
+  if (state.status === 'changing') return 'celebrate'
+  return 'idle'
+}
+// 帧图用百分比尺寸，随窗口缩放自动跟着变大变小（manifest 的 110px 只适合网页端）。
+// manifest 拉取失败时按这套兜底，避免精灵层空白导致宠物整个消失。
+var DSH_FALLBACK = { idle: { frames: 3, fps: 2 }, celebrate: { frames: 3, fps: 4 }, think: { frames: 1, fps: 2 }, error: { frames: 2, fps: 8 } }
+function renderDsh() {
+  if (!dshAppearance) return
+  var name = dshState()
+  var cfg = dshManifest && dshManifest.characters && dshManifest.characters['whale-girl']
+  var sc = (cfg && cfg.states && cfg.states[name]) || DSH_FALLBACK[name]
+  var frames = Math.max(1, sc.frames || 1)
+  dshPulse.querySelector('.dshwv-dsh-state').textContent = DSH_STATE_LABELS[state.status] || state.status
+  dshPulse.querySelector('.dshwv-dsh-detail').textContent = state.message || providerLabel()
+  dshStage.classList.toggle('dshwv-dsh-error', name === 'error')
+  if (dshPlaying === name) return
+  dshPlaying = name
+  dshSprite.style.backgroundImage = 'url("' + dshAsset(name) + '")'
+  dshSprite.style.backgroundSize = (frames * 100) + '% 100%'
+  clearInterval(dshAnimTimer)
+  dshFrame = 0
+  dshSprite.style.backgroundPosition = '0% 0'
+  if (frames > 1) dshAnimTimer = setInterval(function () {
+    dshFrame = (dshFrame + 1) % frames
+    dshSprite.style.backgroundPosition = (-dshFrame * 100) + '% 0'
+  }, Math.max(80, 1000 / ((sc && sc.fps) || 2)))
+}
+function setAppearance(v, persist) {
+  state.appearance = v === 'classic' ? 'classic' : 'dsh'
+  dshAppearance = state.appearance === 'dsh'
+  appearanceSelect.value = state.appearance
+  root.classList.toggle('dshwv-classic', !dshAppearance)
+  dshStage.hidden = !dshAppearance
+  if (!dshAppearance) {
+    clearInterval(dshAnimTimer)
+    dshAnimTimer = null
+    dshPlaying = ''
+  }
+  if (persist) saveConfig()
+  renderDsh()
 }
 var busy = false
 var settleTimer = null
@@ -640,6 +712,8 @@ function animateAmount(from, to, currency, duration) {
   animId = requestAnimationFrame(step)
 }
 function render() {
+  renderDsh()
+  root.classList.toggle('dshwv-classic', !dshAppearance)
   if (bubbleRandomActive && bubbleRandomLines) {
     applyBubbleLines(bubbleRandomLines)
     return
@@ -864,7 +938,7 @@ var soundSet = 'duck'
 var usageMode = 'token'
 function saveConfig() {
   try {
-    apiSetConfig({ scale: state.scale, sound: soundOn, vol: soundVol, soundSet: soundSet, usageMode: usageMode, provider: state.provider })
+    apiSetConfig({ appearance: state.appearance, scale: state.scale, sound: soundOn, vol: soundVol, soundSet: soundSet, usageMode: usageMode, provider: state.provider })
   } catch (err) {}
 }
 function setUsageMode(v) {
@@ -1213,6 +1287,11 @@ function setupHitTest() {
   } catch (err) {}
 }
 function isWhaleXY(clientX, clientY) {
+  if (dshAppearance) {
+    // shortcut: 精灵图按外接方框判定可点区，透明角落也算命中；真按像素判需要 canvas 采样
+    var dr = dshStage.getBoundingClientRect()
+    return clientX >= dr.left && clientX <= dr.right && clientY >= dr.top && clientY <= dr.bottom
+  }
   if (!hitCanvas || !hitReady) return false
   try {
     var r = img.getBoundingClientRect()
@@ -1416,6 +1495,7 @@ window.addEventListener('resize', function () {
 })
 
 function applyConfig(d) {
+  if (d && typeof d.appearance === 'string') setAppearance(d.appearance, false)
   if (d && typeof d.scale === 'number') {
     // 旧配置/越界值：一律钳到 [MIN_SIZE_SCALE, MAX_SCALE]，避免窗口与 UI 不一致
     var s = Math.round(Math.min(MAX_SCALE, Math.max(MIN_SIZE_SCALE, Number(d.scale))) * 10) / 10
@@ -1541,6 +1621,11 @@ function loadAssets() {
       }).catch(function () {})
     })
   })
+  fetch('dsh/manifest.json').then(function (r) { return r.json() }).then(function (manifest) {
+    dshManifest = manifest
+    dshPlaying = '' // 让已播状态按 manifest 的帧数/帧率重播一次
+    renderDsh()
+  }).catch(function () {})
 }
 loadAssets()
 setInterval(function () { refresh(false) }, REFRESH_MS)

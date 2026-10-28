@@ -21,8 +21,17 @@
     .dshwv-root.dshwv-left{transform:scaleX(-1)}
     .dshwv-root.dshwv-dragging{cursor:grabbing;transition:none}
     .dshwv-body{position:absolute;left:0;top:0;width:100%;height:100%;transform-origin:50% 100%;transition:transform .22s cubic-bezier(.34,1.56,.64,1)}
-    .dshwv-img{position:absolute;right:0;top:calc(var(--dshw-base) * .4055);width:59.45%;height:59.45%;display:block;pointer-events:none;-webkit-user-drag:none;user-select:none;transition:top .2s ease}
-    .dshwv-root.dshwv-top .dshwv-img{top:0}
+     .dshwv-img{position:absolute;right:0;top:calc(var(--dshw-base) * .4055);width:59.45%;height:59.45%;display:block;pointer-events:none;-webkit-user-drag:none;user-select:none;transition:top .2s ease}
+     .dshwv-root:not(.dshwv-classic) .dshwv-img{display:none}
+     .dshwv-root.dshwv-top .dshwv-img{top:0}
+     .dshwv-dsh-stage{position:absolute;right:calc(var(--dshw-base) * .04);bottom:calc(var(--dshw-base) * .03);width:calc(var(--dshw-base) * .62);height:calc(var(--dshw-base) * .62);pointer-events:none;z-index:2;filter:drop-shadow(0 8px 7px rgba(0,0,0,.36))}
+     .dshwv-dsh-sprite{position:absolute;inset:0;background-repeat:no-repeat;background-position:0 0;background-size:100% 100%;image-rendering:auto}
+     .dshwv-dsh-pulse{position:absolute;right:70%;bottom:72%;min-width:118px;max-width:170px;padding:8px 11px;color:#f1f2f4;background:rgba(37,38,40,.97);border:1px solid rgba(255,255,255,.12);border-radius:11px;box-shadow:0 8px 20px rgba(0,0,0,.3);font-family:"Segoe UI Variable Text","Segoe UI","Microsoft YaHei UI",system-ui,sans-serif;opacity:0;transform:translateY(5px) scale(.98);transition:opacity .13s ease,transform .16s ease;pointer-events:none}
+     .dshwv-dsh-stage:hover .dshwv-dsh-pulse,.dshwv-dsh-error .dshwv-dsh-pulse{opacity:1;transform:none}
+     .dshwv-dsh-state{display:block;font-size:12px;font-weight:650;white-space:nowrap}
+     .dshwv-dsh-detail{display:block;margin-top:3px;color:#b3b6bc;font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+     .dshwv-classic .dshwv-dsh-stage{display:none}
+     .dshwv-classic .dshwv-body{display:block}
     body.dshwv-live-scale .dshwv-root,body.dshwv-live-scale .dshwv-menu,body.dshwv-live-scale .dshwv-img{transition:none!important}
     .dshwv-bubble{position:absolute;left:0;top:0;width:100%;aspect-ratio:1026/700;pointer-events:none;z-index:1}
     .dshwv-bubble svg{display:block;width:100%;height:100%;pointer-events:none}

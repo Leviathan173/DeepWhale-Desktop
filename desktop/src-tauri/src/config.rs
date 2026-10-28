@@ -83,6 +83,8 @@ fn default_true() -> bool {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
+    #[serde(default = "default_appearance")]
+    pub appearance: String,
     pub scale: f64,
     pub sound: bool,
     pub vol: f64,
@@ -153,6 +155,10 @@ fn default_provider() -> String {
     "deepseek".to_string()
 }
 
+fn default_appearance() -> String {
+    "dsh".to_string()
+}
+
 fn default_debug_port() -> u16 {
     9222
 }
@@ -173,6 +179,7 @@ pub fn norm_provider(p: &str) -> &'static str {
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
+            appearance: default_appearance(),
             scale: 1.5,
             sound: true,
             vol: 0.9,
@@ -205,6 +212,12 @@ impl Default for AppConfig {
 impl AppConfig {
     fn normalized(mut self) -> Self {
         self.sound_set = sound_set(&self.sound_set).to_string();
+        self.appearance = if self.appearance == "classic" {
+            "classic"
+        } else {
+            "dsh"
+        }
+        .to_string();
         self.usage_mode = normalize(&self.usage_mode).to_string();
         self.provider = norm_provider(&self.provider).to_string();
         if self.suoxie_welfare_model.trim().is_empty() {
@@ -255,6 +268,18 @@ pub fn write_prefs(
     cfg.sound_set = crate::config::sound_set(sound_set).to_string();
     cfg.usage_mode = normalize(usage_mode).to_string();
     cfg.opencode_db = Some(opencode_db.trim().to_string()).filter(|s| !s.is_empty());
+    write_file(dir, &cfg.normalized());
+}
+
+/// 只改外观偏好（不碰音效/大小等其它挂件偏好）。
+pub fn write_appearance(dir: &Path, appearance: &str) {
+    let mut cfg = read(dir);
+    cfg.appearance = if appearance == "classic" {
+        "classic"
+    } else {
+        "dsh"
+    }
+    .to_string();
     write_file(dir, &cfg.normalized());
 }
 
