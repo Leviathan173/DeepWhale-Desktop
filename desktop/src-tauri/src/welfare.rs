@@ -17,7 +17,7 @@ fn bearer(jwt: &str) -> String {
 /// 统一 JSON 请求：HTTP 非 2xx 或业务 code 非 0 都算失败（取 message）。
 async fn call(req: reqwest::RequestBuilder) -> Result<Value, String> {
     let (status, text) =
-        apilog::send("suoxie-welfare", req.timeout(Duration::from_secs(20))).await?;
+        apilog::send("suoxie-welfare", req.timeout(balance::SUOXIE_TIMEOUT)).await?;
     let body: Value =
         serde_json::from_str(&text).unwrap_or_else(|_| json!({ "message": "响应非 JSON" }));
     let code = body.get("code").and_then(|v| v.as_i64());
@@ -55,7 +55,7 @@ async fn chat_min(client: &reqwest::Client, api_key: &str, model: &str) -> Resul
                 "max_tokens": 1,
                 "stream": false
             }))
-            .timeout(Duration::from_secs(30)),
+            .timeout(balance::SUOXIE_TIMEOUT),
     )
     .await?;
     if (200..300).contains(&status) {

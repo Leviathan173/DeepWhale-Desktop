@@ -29,7 +29,9 @@ fn main() {
             apilog::init(&dir);
             let client = reqwest::Client::builder()
                 .user_agent("deepwhale-desktop/0.1")
-                .connect_timeout(Duration::from_secs(10))
+                // 连接阶段上限 30s：梭子蟹常有 10s+ 的 connect 卡顿，而各请求自己的
+                // .timeout() 已经负责更短的上限（DeepSeek 15s / 百炼 10s / 平台 15s）。
+                .connect_timeout(Duration::from_secs(30))
                 .build()
                 .map_err(|e| std::io::Error::other(e.to_string()))?;
             app.manage(AppState {

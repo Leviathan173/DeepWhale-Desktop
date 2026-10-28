@@ -14,6 +14,10 @@ pub const BAILIAN_API_URL: &str = "https://bailian-cs.console.aliyun.com/data/ap
 
 pub const SUOXIE_BASE: &str = "https://suoxie.codes";
 
+/// 梭子蟹服务端 TTFB 实测 2–22s（chunked 流还会拖），connect 也常有 10s+ 卡顿：
+/// 单请求放宽到 30s（连接阶段由 client 的 connect_timeout 兜底），别把「对方慢」误判成失败。
+pub const SUOXIE_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// 收集一路并行抓取任务（None → 未配置）。统一三处早返回里的收尾样板。
 async fn join_side(t: Option<tokio::task::JoinHandle<Value>>) -> Value {
     match t {
@@ -263,7 +267,7 @@ async fn fetch_suoxie(client: &reqwest::Client, token: &str) -> Result<Value, St
             )),
             &auth,
         )
-        .timeout(Duration::from_secs(15)),
+        .timeout(SUOXIE_TIMEOUT),
     )
     .await?;
     if !(200..300).contains(&status) {
@@ -284,7 +288,7 @@ async fn fetch_suoxie(client: &reqwest::Client, token: &str) -> Result<Value, St
         );
         let (status, text) = apilog::send(
             "suoxie",
-            suoxie_headers(client.get(&url), &auth).timeout(Duration::from_secs(15)),
+            suoxie_headers(client.get(&url), &auth).timeout(SUOXIE_TIMEOUT),
         )
         .await?;
         if !(200..300).contains(&status) {
@@ -336,12 +340,12 @@ pub async fn get_balance_payload(state: &AppState) -> Value {
         }
         _ => None,
     };
-    // 梭子蟹中转站：有 token 才抓，同样并行跑。整体 25s 超时兜底，
-    // 防分页退化时拖慢整个 payload（join 在主流程末尾等待）。
+    // 梭子蟹中转站：有 token 才抓，同样并行跑。整体 40s 超时兜底（单请求 30s，
+    // 再给分页留一轮余量），防分页退化时无限拖慢整个 payload（join 在主流程末尾等待）。
     let mut suoxie_task = cfg.suoxie_token.clone().map(|tok| {
         let client = state.client.clone();
         tokio::spawn(async move {
-            match tokio::time::timeout(Duration::from_secs(25), fetch_suoxie(&client, &tok)).await {
+            match tokio::time::timeout(Duration::from_secs(40), fetch_suoxie(&client, &tok)).await {
                 Err(_) => json!({ "ok": false, "error": "梭子蟹接口超时" }),
                 Ok(Ok(v)) => v,
                 Ok(Err(e)) => json!({ "ok": false, "error": format!("接口请求失败: {e}") }),
