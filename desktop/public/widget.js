@@ -288,6 +288,12 @@ var DSH_FALLBACK = {
   think: { frames: 1, fps: 2, playback: 'loop' },
   error: { frames: 2, fps: 8, playback: 'once' }
 }
+// background-position 的百分比算的是「容器与图片的剩余空间」比例，不是元素宽度的倍数：
+// 图片宽是容器的 N 倍时，第 i 帧对应 i/(N-1)*100%。写 -i*100% 会算到画面外的空带，
+// 帧一换精灵就整个消失（眨眼/庆祝时最明显）。
+function dshPos(i, frames) {
+  return (frames > 1 ? (i * 100) / (frames - 1) : 0) + '% 0'
+}
 // 按 manifest 的 playback 语义播放：loop 顺播 / pingpong 往返 / once 播完停尾帧 /
 // blink 停在第 0 帧、随机 3-9s 眨一遍（盲轮播会让常态帧一直抖，看着像闪烁）。
 function playDsh(name, sc, frames) {
@@ -297,32 +303,32 @@ function playDsh(name, sc, frames) {
   var mode = (sc && sc.playback) || 'loop'
   var dir = 1
   dshFrame = 0
-  dshSprite.style.backgroundPosition = '0% 0'
+  dshSprite.style.backgroundPosition = dshPos(0, frames)
   if (frames <= 1) return
   function step() {
     if (dshPlaying !== name) return // 状态已切换：旧动画自行退出
     if (mode === 'blink') {
       if (dshFrame === 0) {
         dshFrame = 1
-        dshSprite.style.backgroundPosition = '-100% 0'
+        dshSprite.style.backgroundPosition = dshPos(1, frames)
         dshAnimTimer = setTimeout(step, frameMs)
         return
       }
       dshFrame += 1
       if (dshFrame >= frames) {
         dshFrame = 0
-        dshSprite.style.backgroundPosition = '0% 0'
+        dshSprite.style.backgroundPosition = dshPos(0, frames)
         dshAnimTimer = setTimeout(step, 3000 + Math.random() * 6000)
         return
       }
-      dshSprite.style.backgroundPosition = (-dshFrame * 100) + '% 0'
+      dshSprite.style.backgroundPosition = dshPos(dshFrame, frames)
       dshAnimTimer = setTimeout(step, frameMs)
       return
     }
     if (mode === 'once') {
       if (dshFrame < frames - 1) {
         dshFrame += 1
-        dshSprite.style.backgroundPosition = (-dshFrame * 100) + '% 0'
+        dshSprite.style.backgroundPosition = dshPos(dshFrame, frames)
         dshAnimTimer = setTimeout(step, frameMs)
       }
       return
@@ -333,7 +339,7 @@ function playDsh(name, sc, frames) {
     } else {
       dshFrame = (dshFrame + 1) % frames
     }
-    dshSprite.style.backgroundPosition = (-dshFrame * 100) + '% 0'
+    dshSprite.style.backgroundPosition = dshPos(dshFrame, frames)
     dshAnimTimer = setTimeout(step, frameMs)
   }
   dshAnimTimer = setTimeout(step, mode === 'blink' ? 3000 + Math.random() * 6000 : frameMs)
