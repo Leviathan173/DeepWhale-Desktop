@@ -402,12 +402,21 @@ function clearDshTimers() {
   clearTimeout(dshWakeTimer); dshWakeTimer = null
 }
 function syncDshAmbient() {
-  if (!dshAmbientWanted()) {
+  // 勿扰：停表且强制睡姿
+  if (dshDnd) {
     clearDshTimers()
     dshMode = ''
     dshWakeUntil = 0
     dshSleeping = true
     renderDsh()
+    return
+  }
+  // 不可用（还没 manifest / 报错 / 经典外观）：只停表，不擅自改睡姿——
+  // 否则开机瞬间 manifest 还没到就被判成「该睡」，之后要等 9–15 分钟才会动。
+  if (!dshAmbientWanted()) {
+    clearDshTimers()
+    dshMode = ''
+    dshWakeUntil = 0
     return
   }
   if (!dshMode && !dshSleeping && dshWakeUntil === 0 && dshSleepTimer === null) armDshSleep()
