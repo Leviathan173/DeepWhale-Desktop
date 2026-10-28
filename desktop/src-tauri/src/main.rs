@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod apilog;
 mod app_state;
 mod assets;
 mod balance;
@@ -25,6 +26,7 @@ fn main() {
         .setup(|app| {
             let dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&dir)?;
+            apilog::init(&dir);
             let client = reqwest::Client::builder()
                 .user_agent("deepwhale-desktop/0.1")
                 .connect_timeout(Duration::from_secs(10))

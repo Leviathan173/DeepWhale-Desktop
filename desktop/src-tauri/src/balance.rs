@@ -3,7 +3,7 @@ use std::time::Duration;
 use time::format_description::well_known::Rfc3339;
 
 use crate::app_state::{AppState, BalanceCache};
-use crate::{claude, config, opencode, pricing};
+use crate::{apilog, claude, config, opencode, pricing};
 use serde_json::{json, Value};
 
 pub const BALANCE_URL: &str = "https://api.deepseek.com/user/balance";
@@ -49,42 +49,35 @@ pub fn cached_payload(state: &AppState) -> Option<Value> {
 async fn fetch_balance(client: &reqwest::Client, api_key: &str) -> Result<(f64, String), String> {
     // ponytail: 前端 busy 会挡住手动刷新约整段时间；收紧到单次 15s 超时（放弃双尝试），
     // 保证一次完整请求 + 用量请求总耗时 < 25s。
-    let resp = client
-        .get(BALANCE_URL)
-        .header("Authorization", format!("Bearer {api_key}"))
-        .timeout(Duration::from_secs(15))
-        .send()
-        .await;
-    match resp {
-        Ok(r) => {
-            let status = r.status();
-            if status.is_success() {
-                let body: Value = r
-                    .json()
-                    .await
-                    .map_err(|e| format!("余额接口返回不是合法 JSON: {e}"))?;
-                let info = body
-                    .get("balance_infos")
-                    .and_then(|v| v.as_array())
-                    .and_then(|a| a.first())
-                    .ok_or("余额接口返回结构异常")?;
-                let total = info
-                    .get("total_balance")
-                    // 官方接口 total_balance 是字符串（"110.00"），但兼容 JSON number 两种形态
-                    .and_then(num_or_str)
-                    .ok_or("余额接口 total_balance 缺失")?;
-                let currency = info
-                    .get("currency")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("CNY")
-                    .to_string();
-                Ok((total, currency))
-            } else {
-                Err(format!("HTTP {}", status.as_u16()))
-            }
-        }
-        Err(e) => Err(e.to_string()),
+    let (status, text) = apilog::send(
+        "deepseek",
+        client
+            .get(BALANCE_URL)
+            .header("Authorization", format!("Bearer {api_key}"))
+            .timeout(Duration::from_secs(15)),
+    )
+    .await?;
+    if !(200..300).contains(&status) {
+        return Err(format!("HTTP {status}"));
     }
+    let body: Value =
+        serde_json::from_str(&text).map_err(|e| format!("余额接口返回不是合法 JSON: {e}"))?;
+    let info = body
+        .get("balance_infos")
+        .and_then(|v| v.as_array())
+        .and_then(|a| a.first())
+        .ok_or("余额接口返回结构异常")?;
+    let total = info
+        .get("total_balance")
+        // 官方接口 total_balance 是字符串（"110.00"），但兼容 JSON number 两种形态
+        .and_then(num_or_str)
+        .ok_or("余额接口 total_balance 缺失")?;
+    let currency = info
+        .get("currency")
+        .and_then(|v| v.as_str())
+        .unwrap_or("CNY")
+        .to_string();
+    Ok((total, currency))
 }
 
 /// 令牌实时用量模式：今日费用（元）。
@@ -96,23 +89,24 @@ async fn fetch_today_usage(client: &reqwest::Client, platform_token: &str) -> Re
     let tz = now.offset().whole_seconds();
     let url = format!("{USAGE_URL_BASE}?start={start}&end={end}&tz={tz}");
 
-    let ress = client
-        .get(&url)
-        .header(
-            "Authorization",
-            format!(
-                "Bearer {}",
-                platform_token.trim_start_matches("Bearer ").trim()
-            ),
-        )
-        .timeout(Duration::from_secs(15))
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
-    if !ress.status().is_success() {
-        return Err(format!("http {}", ress.status().as_u16()));
+    let (status, text) = apilog::send(
+        "platform",
+        client
+            .get(&url)
+            .header(
+                "Authorization",
+                format!(
+                    "Bearer {}",
+                    platform_token.trim_start_matches("Bearer ").trim()
+                ),
+            )
+            .timeout(Duration::from_secs(15)),
+    )
+    .await?;
+    if !(200..300).contains(&status) {
+        return Err(format!("http {status}"));
     }
-    let data: Value = ress.json().await.map_err(|e| e.to_string())?;
+    let data: Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
     pricing::compute_today_usage(&data)
         .map(|(cost, _)| cost)
         .ok_or_else(|| "no usage".to_string())
@@ -128,24 +122,25 @@ async fn fetch_bailian_subscription(
         // 控制台当前发送 `_v=` 空值；`undefined` 会被部分网关当成不同请求。
         "{BAILIAN_API_URL}?action=BroadScopeAspnGateway&product=sfm_bailian&api=zeldaHttp.apikeyMgr./tokenplan/personal/api/v2/usage&_v="
     );
-    let ress = client
-        .post(&url)
-        .header("content-type", "application/x-www-form-urlencoded")
-        .header("cookie", cookie)
-        .header("origin", "https://bailian.console.aliyun.com")
-        .header(
-            "referer",
-            "https://bailian.console.aliyun.com/cn-beijing/subscription/token-plan/personal",
-        )
-        .body(post_data.to_string())
-        .timeout(Duration::from_secs(10))
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
-    if !ress.status().is_success() {
-        return Err(format!("http {}", ress.status().as_u16()));
+    let (status, text) = apilog::send(
+        "bailian",
+        client
+            .post(&url)
+            .header("content-type", "application/x-www-form-urlencoded")
+            .header("cookie", cookie)
+            .header("origin", "https://bailian.console.aliyun.com")
+            .header(
+                "referer",
+                "https://bailian.console.aliyun.com/cn-beijing/subscription/token-plan/personal",
+            )
+            .body(post_data.to_string())
+            .timeout(Duration::from_secs(10)),
+    )
+    .await?;
+    if !(200..300).contains(&status) {
+        return Err(format!("http {status}"));
     }
-    ress.json::<Value>().await.map_err(|e| e.to_string())
+    serde_json::from_str::<Value>(&text).map_err(|e| e.to_string())
 }
 
 /// 解析百炼 TokenPlan 用量接口响应（实测结构）：
@@ -260,20 +255,21 @@ pub(crate) fn suoxie_headers(req: reqwest::RequestBuilder, auth: &str) -> reqwes
 async fn fetch_suoxie(client: &reqwest::Client, token: &str) -> Result<Value, String> {
     let auth = format!("Bearer {}", token.trim_start_matches("Bearer ").trim());
 
-    let me = suoxie_headers(
-        client.get(format!(
-            "{SUOXIE_BASE}/api/v1/auth/me?timezone=Asia%2FShanghai"
-        )),
-        &auth,
+    let (status, text) = apilog::send(
+        "suoxie",
+        suoxie_headers(
+            client.get(format!(
+                "{SUOXIE_BASE}/api/v1/auth/me?timezone=Asia%2FShanghai"
+            )),
+            &auth,
+        )
+        .timeout(Duration::from_secs(15)),
     )
-    .timeout(Duration::from_secs(15))
-    .send()
-    .await
-    .map_err(|e| e.to_string())?;
-    if !me.status().is_success() {
-        return Err(format!("HTTP {}", me.status().as_u16()));
+    .await?;
+    if !(200..300).contains(&status) {
+        return Err(format!("HTTP {status}"));
     }
-    let me: Value = me.json().await.map_err(|e| e.to_string())?;
+    let me: Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
     let balance = me
         .pointer("/data/balance")
         .and_then(num_or_str)
@@ -286,15 +282,15 @@ async fn fetch_suoxie(client: &reqwest::Client, token: &str) -> Result<Value, St
         let url = format!(
             "{SUOXIE_BASE}/api/v1/usage?start_date={day}&end_date={day}&page={page}&page_size=100&timezone=Asia%2FShanghai"
         );
-        let r = suoxie_headers(client.get(&url), &auth)
-            .timeout(Duration::from_secs(15))
-            .send()
-            .await
-            .map_err(|e| e.to_string())?;
-        if !r.status().is_success() {
-            return Err(format!("HTTP {}", r.status().as_u16()));
+        let (status, text) = apilog::send(
+            "suoxie",
+            suoxie_headers(client.get(&url), &auth).timeout(Duration::from_secs(15)),
+        )
+        .await?;
+        if !(200..300).contains(&status) {
+            return Err(format!("HTTP {status}"));
         }
-        let body: Value = r.json().await.map_err(|e| e.to_string())?;
+        let body: Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
         if let Some(items) = body.pointer("/data/items").and_then(|v| v.as_array()) {
             spend += page_cost(items);
         }

@@ -5,7 +5,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde_json::{json, Value};
 use tauri::{Emitter, Manager};
 
-use crate::{balance, config};
+use crate::{apilog, balance, config};
 
 const API: &str = "https://suoxie.codes/api/v1";
 const CHAT_URL: &str = "https://suoxie.codes/v1/chat/completions";
@@ -16,23 +16,17 @@ fn bearer(jwt: &str) -> String {
 
 /// 统一 JSON 请求：HTTP 非 2xx 或业务 code 非 0 都算失败（取 message）。
 async fn call(req: reqwest::RequestBuilder) -> Result<Value, String> {
-    let resp = req
-        .timeout(Duration::from_secs(20))
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
-    let status = resp.status();
-    let body: Value = resp
-        .json()
-        .await
-        .unwrap_or_else(|_| json!({ "message": "响应非 JSON" }));
+    let (status, text) =
+        apilog::send("suoxie-welfare", req.timeout(Duration::from_secs(20))).await?;
+    let body: Value =
+        serde_json::from_str(&text).unwrap_or_else(|_| json!({ "message": "响应非 JSON" }));
     let code = body.get("code").and_then(|v| v.as_i64());
-    if !status.is_success() || code.is_some_and(|c| c != 0) {
+    if !(200..300).contains(&status) || code.is_some_and(|c| c != 0) {
         let msg = body
             .get("message")
             .and_then(|v| v.as_str())
             .unwrap_or("请求失败");
-        return Err(format!("HTTP {} {msg}", status.as_u16()));
+        return Err(format!("HTTP {status} {msg}"));
     }
     Ok(body)
 }
@@ -50,22 +44,23 @@ async fn get_status(client: &reqwest::Client, auth: &str) -> Result<Value, Strin
 
 /// 最小 chat 请求：只为凑「当日一次成功调用」，输入输出都压到最低。
 async fn chat_min(client: &reqwest::Client, api_key: &str, model: &str) -> Result<(), String> {
-    let req = client
-        .post(CHAT_URL)
-        .bearer_auth(api_key.trim().trim_start_matches("Bearer ").trim())
-        .json(&json!({
-            "model": model,
-            "messages": [{ "role": "user", "content": "hi" }],
-            "max_tokens": 1,
-            "stream": false
-        }))
-        .timeout(Duration::from_secs(30));
-    let resp = req.send().await.map_err(|e| e.to_string())?;
-    let status = resp.status();
-    if status.is_success() {
+    let (status, text) = apilog::send(
+        "suoxie-chat",
+        client
+            .post(CHAT_URL)
+            .bearer_auth(api_key.trim().trim_start_matches("Bearer ").trim())
+            .json(&json!({
+                "model": model,
+                "messages": [{ "role": "user", "content": "hi" }],
+                "max_tokens": 1,
+                "stream": false
+            }))
+            .timeout(Duration::from_secs(30)),
+    )
+    .await?;
+    if (200..300).contains(&status) {
         return Ok(());
     }
-    let text = resp.text().await.unwrap_or_default();
     let snippet: String = text.chars().take(160).collect();
     Err(format!("chat HTTP {status}: {snippet}"))
 }

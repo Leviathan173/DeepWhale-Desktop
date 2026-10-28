@@ -84,6 +84,19 @@ npm run tauri build   # 产出 Windows 安装包（.msi/.exe/.nsis.zip + latest.
 
 如 Edge 安装在其他位置，请替换可执行文件路径。首次在此独立浏览器中登录日常需要的服务；保持该 Edge 进程运行。在小鲸鱼「设置 → 凭据」勾选「附加调试浏览器」、端口填 `9222`。可将命令保存为快捷方式目标或 `.cmd` 启动文件。调试 profile 本身保存登录态，应与密码管理器同等保护。
 
+### 接口日志
+
+每次余额刷新都会在 `%APPDATA%\com.leviathan.deepwhale-desktop\api.log` 记一行接口调用：
+
+```text
+2026-10-28T12:20:20Z [suoxie] GET https://suoxie.codes/api/v1/auth/me?timezone=Asia%2FShanghai -> ERR error sending request … / client error (Connect) / operation timed out 10014ms
+2026-10-28T12:20:11Z [deepseek] GET https://api.deepseek.com/user/balance -> 200 264ms | {"is_available":true,…
+```
+
+- 字段：时间、来源（`deepseek` / `platform` / `bailian` / `suoxie` / `suoxie-welfare` / `suoxie-chat`）、method、完整 URL（含 query 参数）、状态码或错误原因、耗时、响应片段（单行、截断 300 字）
+- 不记请求头，Authorization / cookie / API Key 不会进日志
+- 上限 10MB，超出时只保留最近约 512KB，旧行丢弃
+
 ### 今日已用（本地记账）
 
 - 数据源：`opencode.sqlite` 与 `~/.claude/projects/**` 当日会话记录
