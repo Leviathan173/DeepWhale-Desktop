@@ -323,11 +323,11 @@ var dshWalkLast = 0
 var dshClickTimer = null
 function dshAsset(name) { return 'dsh/whale-girl/' + name + '.png' }
 function dshState() {
-  if (drag && drag.active) return 'drag'
+  // 死区：按下但还没移动出阈值不算拖拽，保持原姿势，否则单击会闪一下 drag
+  if (drag && drag.active && drag.moved) return 'drag'
   if (dshDnd) return 'sleep' // 勿扰优先：连报错也不打断睡眠（数字/气泡照常显示）
   if (Date.now() < dshClickUntil) return 'joy' // 单击：开心一下
   if (state.status === 'error' && Date.now() < dshErrorUntil) return 'error'
-  if (dshDnd) return 'sleep'
   if (Date.now() < dshWakeUntil) return 'wake'
   if (dshMode) return dshMode
   if (dshSleeping) return 'sleep'
@@ -1707,7 +1707,12 @@ function onDocPointerMove(e) {
   if (!drag || !drag.active) return
   var dx = e.screenX - drag.startScreenX
   var dy = e.screenY - drag.startScreenY
-  if (dx * dx + dy * dy >= CLICK_SQ) drag.moved = true
+  // 死区：位移没过 4px 既不算拖拽也不移窗，单击不能把精灵切成 drag
+  if (!drag.moved) {
+    if (dx * dx + dy * dy < CLICK_SQ) return
+    drag.moved = true
+    renderDsh()
+  }
   // Keep the pre-drag flip orientation while dragging (state.h/v stay as they
   // were); on release endDrag() recomputes the anchors and settle() flips the
   // class with a smooth transition instead of reverting instantly.
