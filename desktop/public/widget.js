@@ -282,7 +282,62 @@ function dshState() {
 }
 // 帧图用百分比尺寸，随窗口缩放自动跟着变大变小（manifest 的 110px 只适合网页端）。
 // manifest 拉取失败时按这套兜底，避免精灵层空白导致宠物整个消失。
-var DSH_FALLBACK = { idle: { frames: 3, fps: 2 }, celebrate: { frames: 3, fps: 4 }, think: { frames: 1, fps: 2 }, error: { frames: 2, fps: 8 } }
+var DSH_FALLBACK = {
+  idle: { frames: 3, fps: 2, playback: 'blink' },
+  celebrate: { frames: 3, fps: 4, playback: 'loop' },
+  think: { frames: 1, fps: 2, playback: 'loop' },
+  error: { frames: 2, fps: 8, playback: 'once' }
+}
+// 按 manifest 的 playback 语义播放：loop 顺播 / pingpong 往返 / once 播完停尾帧 /
+// blink 停在第 0 帧、随机 3-9s 眨一遍（盲轮播会让常态帧一直抖，看着像闪烁）。
+function playDsh(name, sc, frames) {
+  clearTimeout(dshAnimTimer)
+  dshAnimTimer = null
+  var frameMs = Math.max(80, Math.round(1000 / Math.max(1, (sc && sc.fps) || 2)))
+  var mode = (sc && sc.playback) || 'loop'
+  var dir = 1
+  dshFrame = 0
+  dshSprite.style.backgroundPosition = '0% 0'
+  if (frames <= 1) return
+  function step() {
+    if (dshPlaying !== name) return // 状态已切换：旧动画自行退出
+    if (mode === 'blink') {
+      if (dshFrame === 0) {
+        dshFrame = 1
+        dshSprite.style.backgroundPosition = '-100% 0'
+        dshAnimTimer = setTimeout(step, frameMs)
+        return
+      }
+      dshFrame += 1
+      if (dshFrame >= frames) {
+        dshFrame = 0
+        dshSprite.style.backgroundPosition = '0% 0'
+        dshAnimTimer = setTimeout(step, 3000 + Math.random() * 6000)
+        return
+      }
+      dshSprite.style.backgroundPosition = (-dshFrame * 100) + '% 0'
+      dshAnimTimer = setTimeout(step, frameMs)
+      return
+    }
+    if (mode === 'once') {
+      if (dshFrame < frames - 1) {
+        dshFrame += 1
+        dshSprite.style.backgroundPosition = (-dshFrame * 100) + '% 0'
+        dshAnimTimer = setTimeout(step, frameMs)
+      }
+      return
+    }
+    if (mode === 'pingpong') {
+      if (dshFrame + dir > frames - 1 || dshFrame + dir < 0) dir = -dir
+      dshFrame += dir
+    } else {
+      dshFrame = (dshFrame + 1) % frames
+    }
+    dshSprite.style.backgroundPosition = (-dshFrame * 100) + '% 0'
+    dshAnimTimer = setTimeout(step, frameMs)
+  }
+  dshAnimTimer = setTimeout(step, mode === 'blink' ? 3000 + Math.random() * 6000 : frameMs)
+}
 function renderDsh() {
   if (!dshAppearance) return
   var name = dshState()
@@ -296,13 +351,7 @@ function renderDsh() {
   dshPlaying = name
   dshSprite.style.backgroundImage = 'url("' + dshAsset(name) + '")'
   dshSprite.style.backgroundSize = (frames * 100) + '% 100%'
-  clearInterval(dshAnimTimer)
-  dshFrame = 0
-  dshSprite.style.backgroundPosition = '0% 0'
-  if (frames > 1) dshAnimTimer = setInterval(function () {
-    dshFrame = (dshFrame + 1) % frames
-    dshSprite.style.backgroundPosition = (-dshFrame * 100) + '% 0'
-  }, Math.max(80, 1000 / ((sc && sc.fps) || 2)))
+  playDsh(name, sc, frames)
 }
 function setAppearance(v, persist) {
   state.appearance = v === 'classic' ? 'classic' : 'dsh'
@@ -311,7 +360,7 @@ function setAppearance(v, persist) {
   root.classList.toggle('dshwv-classic', !dshAppearance)
   dshStage.hidden = !dshAppearance
   if (!dshAppearance) {
-    clearInterval(dshAnimTimer)
+    clearTimeout(dshAnimTimer)
     dshAnimTimer = null
     dshPlaying = ''
   }
