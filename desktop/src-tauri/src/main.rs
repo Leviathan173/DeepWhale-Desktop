@@ -329,6 +329,7 @@ fn get_config(app: tauri::AppHandle) -> Value {
     json!({
         "scale": cfg.scale,
         "appearance": cfg.appearance,
+        "dnd": cfg.dnd,
         "sound": cfg.sound,
         "vol": cfg.vol,
         "soundSet": cfg.sound_set,
@@ -361,6 +362,7 @@ fn set_config(app: tauri::AppHandle, payload: Value) -> Result<Value, String> {
         .unwrap_or(1.0)
         .clamp(1.0, 2.5);
     let appearance = get("appearance").and_then(|v| v.as_str()).unwrap_or("dsh");
+    let dnd = get("dnd").and_then(|v| v.as_bool()).unwrap_or(false);
     let sound = get("sound").and_then(|v| v.as_bool()).unwrap_or(true);
     let vol = get("vol")
         .and_then(|v| v.as_f64())
@@ -377,6 +379,7 @@ fn set_config(app: tauri::AppHandle, payload: Value) -> Result<Value, String> {
     let dir = &st.dir;
     config::write_prefs(dir, scale, sound, vol, sound_set, usage_mode, opencode_db);
     config::write_appearance(dir, appearance);
+    config::write_dnd(dir, dnd);
     config::write_provider(dir, provider);
     Ok(json!({ "ok": true }))
 }

@@ -18,7 +18,7 @@ var PASSTHROUGH_POLL_MS = 66
 var WHALE = window.__TAURI__ && window.__TAURI__.core ? window.__TAURI__.core : null
 function apiBalance() { return WHALE.invoke('get_balance') }
 function apiGetConfig() { return WHALE.invoke('get_config') }
-function apiSetConfig(cfg) { return WHALE.invoke('set_config', cfg) }
+function apiSetConfig(cfg) { return WHALE.invoke('set_config', { payload: cfg }) }
 function apiImageUrl() { return WHALE.invoke('image_data_url') }
 function apiSoundUrl(action, set) { return WHALE.invoke('sound_data_url', { action: action, set: set }) }
 function apiVoiceUrl(id) { return WHALE.invoke('voice_data_url', { id: id }) }
@@ -131,6 +131,11 @@ appearanceSelect.className = 'dshwv-sound'
 appearanceSelect.appendChild(soundOpt('dsh', '大肥鱼'))
 appearanceSelect.appendChild(soundOpt('classic', '余额鲸鱼'))
 appearanceSelect.addEventListener('change', function () { setAppearance(appearanceSelect.value, true) })
+var dndBox = document.createElement('input')
+dndBox.type = 'checkbox'
+dndBox.className = 'dshwv-check'
+dndBox.title = '勿扰：大肥鱼保持睡觉，不自动活动'
+dndBox.addEventListener('change', function () { setDnd(dndBox.checked, true) })
 // 启用的供应商列表（按此顺序点击鲸鱼轮换）：deepseek 恒有，百炼/梭子蟹有凭据才加入。
 function providerList() {
   var list = ['deepseek']
@@ -170,6 +175,9 @@ row4.appendChild(usageSelect)
 var rowAppearance = menuRow()
 rowAppearance.appendChild(menuLabel('外观'))
 rowAppearance.appendChild(appearanceSelect)
+var rowDnd = menuRow()
+rowDnd.appendChild(menuLabel('勿扰'))
+rowDnd.appendChild(dndBox)
 var rowSet = menuRow()
 var setBtn = document.createElement('button')
 setBtn.type = 'button'
@@ -185,6 +193,7 @@ menuBox.appendChild(row2)
 menuBox.appendChild(row3)
 menuBox.appendChild(row4)
 menuBox.appendChild(rowAppearance)
+menuBox.appendChild(rowDnd)
 menuBox.appendChild(rowSet)
 
 var textBox = document.createElement('div')
@@ -259,6 +268,7 @@ var state = {
   status: 'loading',
   message: '',
   appearance: 'dsh',
+  dnd: false,
   provider: 'deepseek',
   hasBailian: false,
   bailian: null,
@@ -273,10 +283,10 @@ var dshFrame = 0
 var dshManifest = null
 var dshPlaying = ''
 var DSH_STATE_LABELS = { loading: '正在连接', changing: '余额变化', ok: '准备好了', error: '请求失败' }
-// 余额状态之外的精灵按这份作息表自动轮转，每个仍用 manifest 自己的 playback 语义播放
-// （loop / pingpong / once / blink）。drag 不排程：真拖窗口时才切。
-var DSH_AMBIENT = [
-  { state: 'idle', ms: 8000 },
+// 随机作息：平均 12 分钟一次（每小时 5 次），每次随机挑一个动作播完回 idle；
+// 醒着待机 90s 后入睡，点一下鲸鱼会唤醒。勿扰模式常睡。每个动作仍用 manifest
+// 自己的 playback 语义（loop / pingpong / once / blink）。
+var DSH_MODES = [
   { state: 'working', ms: 5000 },
   { state: 'joy', ms: 3000 },
   { state: 'walk', ms: 5000 },
@@ -285,21 +295,36 @@ var DSH_AMBIENT = [
   { state: 'play', ms: 3500 },
   { state: 'welcome', ms: 2500 },
   { state: 'disappointed', ms: 3000 },
-  { state: 'sleep', ms: 12000 },
-  { state: 'wake', ms: 3000 }
+  { state: 'celebrate', ms: 3000 },
+  { state: 'think', ms: 4000 }
 ]
-var dshAmbientIdx = -1
-var dshAmbientTimer = null
+var DSH_NEXT_MIN_MS = 9 * 60 * 1000
+var DSH_NEXT_MAX_MS = 15 * 60 * 1000
+var DSH_IDLE_MS = 90 * 1000
+var DSH_WAKE_MS = 2500
+var dshDnd = false
+var dshSleeping = false
+var dshWakeUntil = 0
+var dshMode = ''
+var dshLastMode = ''
+var dshNextTimer = null
+var dshModeTimer = null
+var dshSleepTimer = null
+var dshWakeTimer = null
 var dshWalkRaf = null
 var dshWalkDir = 1
 var dshWalkLast = 0
 function dshAsset(name) { return 'dsh/whale-girl/' + name + '.png' }
 function dshState() {
   if (drag && drag.active) return 'drag'
+  if (dshDnd) return 'sleep' // 勿扰优先：连报错也不打断睡眠（数字/气泡照常显示）
   if (state.status === 'error') return 'error'
-  if (state.status === 'loading') return 'think'
-  if (state.status === 'changing') return 'celebrate'
-  return DSH_AMBIENT[Math.max(0, dshAmbientIdx)].state
+  if (dshDnd) return 'sleep'
+  if (Date.now() < dshWakeUntil) return 'wake'
+  if (dshMode) return dshMode
+  if (dshSleeping) return 'sleep'
+  if (state.status === 'loading') return 'think' // 通知类状态不打断动作，只在休息时显示
+  return 'idle'
 }
 // 帧图用百分比尺寸，随窗口缩放自动跟着变大变小（manifest 的 110px 只适合网页端）。
 // manifest 拉取失败时按这套兜底，避免精灵层空白导致宠物整个消失。
@@ -366,27 +391,96 @@ function playDsh(name, sc, frames) {
   }
   dshAnimTimer = setTimeout(step, mode === 'blink' ? 3000 + Math.random() * 6000 : frameMs)
 }
-// 作息表只在「余额正常、没拖拽、没开菜单」时跑；其余时候停表，恢复后从 idle 重来。
+// 作息在「大肥鱼 + manifest 已载入 + 未开勿扰 + 余额不报错」时运行。
 function dshAmbientWanted() {
-  // 作息表依赖 manifest 的帧数/播放语义，拉取失败就退回只放 idle
-  return dshAppearance && dshManifest !== null && state.status === 'ok' && !menuOpen && !(drag && drag.active)
+  return dshAppearance && dshManifest !== null && !dshDnd && state.status !== 'error'
+}
+function clearDshTimers() {
+  clearTimeout(dshNextTimer); dshNextTimer = null
+  clearTimeout(dshModeTimer); dshModeTimer = null
+  clearTimeout(dshSleepTimer); dshSleepTimer = null
+  clearTimeout(dshWakeTimer); dshWakeTimer = null
 }
 function syncDshAmbient() {
   if (!dshAmbientWanted()) {
-    clearTimeout(dshAmbientTimer)
-    dshAmbientTimer = null
-    dshAmbientIdx = -1
+    clearDshTimers()
+    dshMode = ''
+    dshWakeUntil = 0
+    dshSleeping = true
+    renderDsh()
     return
   }
-  if (dshAmbientTimer) return
-  dshAmbientIdx = -1
-  stepDshAmbient()
+  if (!dshMode && !dshSleeping && dshWakeUntil === 0 && dshSleepTimer === null) armDshSleep()
+  if (!dshNextTimer && !dshMode && dshWakeUntil === 0) armDshNext()
 }
-function stepDshAmbient() {
-  dshAmbientIdx = (dshAmbientIdx + 1) % DSH_AMBIENT.length
+function armDshSleep() {
+  clearTimeout(dshSleepTimer)
+  dshSleepTimer = setTimeout(function () {
+    dshSleepTimer = null
+    if (!dshAmbientWanted() || dshMode) return
+    dshSleeping = true
+    renderDsh()
+  }, DSH_IDLE_MS)
+}
+// 下一次随机动作：9–15 分钟均匀分布，均值 12 分钟 = 每小时 5 次。
+function armDshNext() {
+  clearTimeout(dshNextTimer)
+  var ms = DSH_NEXT_MIN_MS + Math.random() * (DSH_NEXT_MAX_MS - DSH_NEXT_MIN_MS)
+  dshNextTimer = setTimeout(fireDshMode, ms)
+}
+function fireDshMode() {
+  dshNextTimer = null
+  if (!dshAmbientWanted()) return
+  if (drag && drag.active) {
+    // 正在拖拽：延后 30s 再试，不打断手上的操作
+    dshNextTimer = setTimeout(fireDshMode, 30 * 1000)
+    return
+  }
+  if (dshSleeping) {
+    dshSleeping = false
+    dshWakeUntil = Date.now() + DSH_WAKE_MS
+    renderDsh()
+    dshWakeTimer = setTimeout(startDshMode, DSH_WAKE_MS)
+    return
+  }
+  startDshMode()
+}
+function startDshMode() {
+  dshWakeTimer = null
+  dshWakeUntil = 0
+  if (!dshAmbientWanted()) {
+    renderDsh()
+    return
+  }
+  var pick = DSH_MODES[Math.floor(Math.random() * DSH_MODES.length)]
+  // 不连着重复同一个动作
+  if (pick.state === dshLastMode) pick = DSH_MODES[(DSH_MODES.indexOf(pick) + 1) % DSH_MODES.length]
+  dshLastMode = pick.state
+  dshMode = pick.state
   renderDsh()
-  clearTimeout(dshAmbientTimer)
-  dshAmbientTimer = setTimeout(stepDshAmbient, DSH_AMBIENT[dshAmbientIdx].ms)
+  clearTimeout(dshModeTimer)
+  dshModeTimer = setTimeout(function () {
+    dshModeTimer = null
+    dshMode = ''
+    renderDsh()
+    if (!dshAmbientWanted()) return
+    armDshSleep()
+    armDshNext()
+  }, pick.ms)
+}
+// 点击唤醒：睡着时先播 wake 再回 idle，并把入睡计时重新挂上。
+function dshUserWake() {
+  if (!dshAppearance || dshDnd || !dshSleeping) return
+  dshSleeping = false
+  dshWakeUntil = Date.now() + DSH_WAKE_MS
+  renderDsh()
+  clearTimeout(dshWakeTimer)
+  dshWakeTimer = setTimeout(function () {
+    dshWakeTimer = null
+    dshWakeUntil = 0
+    renderDsh()
+    if (dshAmbientWanted()) armDshSleep()
+  }, DSH_WAKE_MS)
 }
 // walk：真的平移 OS 窗口（45px/s），顶到屏幕左右沿就掉头；朝向用 sprite 的镜像表达。
 function startDshWalk() {
@@ -444,9 +538,9 @@ function setAppearance(v, persist) {
   if (!dshAppearance) {
     clearTimeout(dshAnimTimer)
     dshAnimTimer = null
-    clearTimeout(dshAmbientTimer)
-    dshAmbientTimer = null
-    dshAmbientIdx = -1
+    clearDshTimers()
+    dshMode = ''
+    dshWakeUntil = 0
     stopDshWalk()
     dshPlaying = ''
   } else {
@@ -458,9 +552,23 @@ function setAppearance(v, persist) {
     state.hOff = state.left
     state.vOff = state.top
     root.classList.remove('dshwv-left', 'dshwv-top')
+    dshSleeping = false
   }
   if (persist) saveConfig()
   renderDsh()
+  syncDshAmbient()
+}
+// 勿扰：只冻结大肥鱼作息（常睡），余额刷新/通知不受影响。
+function setDnd(on, persist) {
+  dshDnd = !!on
+  state.dnd = dshDnd
+  dndBox.checked = dshDnd
+  if (!dshDnd) {
+    // 关勿扰：立刻醒来回到 idle，别等下一次动作
+    dshSleeping = false
+    renderDsh()
+  }
+  if (persist) saveConfig()
   syncDshAmbient()
 }
 var busy = false
@@ -1084,7 +1192,7 @@ var soundSet = 'duck'
 var usageMode = 'token'
 function saveConfig() {
   try {
-    apiSetConfig({ appearance: state.appearance, scale: state.scale, sound: soundOn, vol: soundVol, soundSet: soundSet, usageMode: usageMode, provider: state.provider })
+    apiSetConfig({ appearance: state.appearance, dnd: state.dnd, scale: state.scale, sound: soundOn, vol: soundVol, soundSet: soundSet, usageMode: usageMode, provider: state.provider })
   } catch (err) {}
 }
 function setUsageMode(v) {
@@ -1603,9 +1711,8 @@ function endDrag(e, clickAllowed) {
   root.classList.remove('dshwv-dragging')
   setWidgetCursor(isWhaleHit(e) ? 'grab' : '')
   if (clickAllowed && !drag.moved) {
-    // 点击鲸鱼：轮换到下一个已启用供应商，并展开气泡展示其数据
-    renderDsh()
-    syncDshAmbient()
+    // 点击鲸鱼：睡着时先醒来；同时轮换供应商并展开气泡展示数据
+    dshUserWake()
     cycleProvider()
     showBubble()
     return
@@ -1670,6 +1777,7 @@ window.addEventListener('resize', function () {
 
 function applyConfig(d) {
   if (d && typeof d.appearance === 'string') setAppearance(d.appearance, false)
+  if (d && typeof d.dnd === 'boolean') setDnd(d.dnd, false)
   if (d && typeof d.scale === 'number') {
     // 旧配置/越界值：一律钳到 [MIN_SIZE_SCALE, MAX_SCALE]，避免窗口与 UI 不一致
     var s = Math.round(Math.min(MAX_SCALE, Math.max(MIN_SIZE_SCALE, Number(d.scale))) * 10) / 10

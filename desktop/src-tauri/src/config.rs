@@ -85,6 +85,9 @@ fn default_true() -> bool {
 pub struct AppConfig {
     #[serde(default = "default_appearance")]
     pub appearance: String,
+    /// 勿扰模式：大肥鱼常睡，不跑自动作息（只影响挂件动画，不影响余额刷新）。
+    #[serde(default)]
+    pub dnd: bool,
     pub scale: f64,
     pub sound: bool,
     pub vol: f64,
@@ -180,6 +183,7 @@ impl Default for AppConfig {
     fn default() -> Self {
         Self {
             appearance: default_appearance(),
+            dnd: false,
             scale: 1.5,
             sound: true,
             vol: 0.9,
@@ -280,6 +284,13 @@ pub fn write_appearance(dir: &Path, appearance: &str) {
         "dsh"
     }
     .to_string();
+    write_file(dir, &cfg.normalized());
+}
+
+/// 只改勿扰开关（不碰其它挂件偏好）。
+pub fn write_dnd(dir: &Path, on: bool) {
+    let mut cfg = read(dir);
+    cfg.dnd = on;
     write_file(dir, &cfg.normalized());
 }
 
@@ -478,6 +489,22 @@ mod tests {
         assert_eq!(c.debug_port, 1234);
         assert_eq!(norm_provider("suoxie"), "suoxie");
         assert_eq!(norm_provider("x"), "deepseek");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn dnd_toggle_preserves_other_fields() {
+        let dir = tmp_dir("dshw-config-dnd-test");
+        write_prefs(&dir, 1.3, true, 0.5, "whale", "token", "");
+        write_appearance(&dir, "dsh");
+        write_dnd(&dir, true);
+        let c = read(&dir);
+        assert!(c.dnd);
+        assert_eq!(c.scale, 1.3);
+        assert_eq!(c.appearance, "dsh");
+        write_dnd(&dir, false);
+        assert!(!read(&dir).dnd);
+
         let _ = fs::remove_dir_all(&dir);
     }
 }
