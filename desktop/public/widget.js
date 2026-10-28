@@ -303,13 +303,11 @@ var DSH_NEXT_MAX_MS = 15 * 60 * 1000
 var DSH_IDLE_MS = 90 * 1000
 var DSH_WAKE_MS = 2500
 var DSH_ERROR_MS = 2500
-var DSH_CLICK_MS = 1500
 var dshDnd = false
 var dshSleeping = false
 var dshWakeUntil = 0
 var dshErrorUntil = 0
 var dshErrorArmed = false
-var dshClickUntil = 0
 var dshMode = ''
 var dshLastMode = ''
 var dshNextTimer = null
@@ -320,13 +318,11 @@ var dshErrorTimer = null
 var dshWalkRaf = null
 var dshWalkDir = 1
 var dshWalkLast = 0
-var dshClickTimer = null
 function dshAsset(name) { return 'dsh/whale-girl/' + name + '.png' }
 function dshState() {
   // 死区：按下但还没移动出阈值不算拖拽，保持原姿势，否则单击会闪一下 drag
   if (drag && drag.active && drag.moved) return 'drag'
   if (dshDnd) return 'sleep' // 勿扰优先：连报错也不打断睡眠（数字/气泡照常显示）
-  if (Date.now() < dshClickUntil) return 'joy' // 单击：开心一下
   if (state.status === 'error' && Date.now() < dshErrorUntil) return 'error'
   if (Date.now() < dshWakeUntil) return 'wake'
   if (dshMode) return dshMode
@@ -499,18 +495,6 @@ function dshUserWake() {
     if (dshAmbientWanted()) armDshSleep()
   }, DSH_WAKE_MS)
   return true
-}
-// 单击反应：醒着时播 1.5s joy 回应一下（睡着时走唤醒，不叠加）。
-function dshClickReaction() {
-  if (!dshAppearance || dshDnd) return
-  dshClickUntil = Date.now() + DSH_CLICK_MS
-  renderDsh()
-  clearTimeout(dshClickTimer)
-  dshClickTimer = setTimeout(function () {
-    dshClickTimer = null
-    dshClickUntil = 0
-    renderDsh()
-  }, DSH_CLICK_MS)
 }
 // walk：真的平移 OS 窗口（45px/s），顶到屏幕左右沿就掉头；朝向用 sprite 的镜像表达。
 function startDshWalk() {
@@ -1400,13 +1384,20 @@ function playVoice(id) {
     }
   } catch (err) {}
 }
+// 挤压弹动跟着“当前可见的形象”走：classic 在 body 上，大肥鱼在 stage 的 scale 属性上
+// （stage 的 transform 被 motion keyframes 占着，只能用独立的 scale 叠加）。
+function setDshSquish(on) {
+  try { dshStage.style.scale = on ? '1.05 0.88' : '' } catch (err) {}
+}
 function pressDown() {
   body.style.transform = SQUISH
+  setDshSquish(true)
   pressing = true
   playPress()
 }
 function pressUp() {
   body.style.transform = 'scaleY(1) scaleX(1)'
+  setDshSquish(false)
   pressing = false
   if (pressEnded) {
     // hold (or released after Ya1 finished) → Ya2 now
@@ -1711,6 +1702,7 @@ function onDocPointerMove(e) {
   if (!drag.moved) {
     if (dx * dx + dy * dy < CLICK_SQ) return
     drag.moved = true
+    setDshSquish(false) // 真拖起来了：撤掉按压挤压，交给 drag 姿势
     renderDsh()
   }
   // Keep the pre-drag flip orientation while dragging (state.h/v stay as they
@@ -1768,8 +1760,8 @@ function endDrag(e, clickAllowed) {
   root.classList.remove('dshwv-dragging')
   setWidgetCursor(isWhaleHit(e) ? 'grab' : '')
   if (clickAllowed && !drag.moved) {
-    // 单击（位移 < 4px）：睡着先唤醒，否则开心一下；同时轮换供应商并展开气泡
-    if (!dshUserWake()) dshClickReaction()
+    // 单击（位移 < 4px）：睡着先唤醒；挤压弹动由 pressDown/pressUp 表达
+    dshUserWake()
     cycleProvider()
     showBubble()
     return
