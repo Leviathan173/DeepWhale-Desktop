@@ -306,8 +306,9 @@ function dshState() {
 var DSH_FALLBACK = {
   idle: { frames: 3, fps: 2, playback: 'blink' },
   celebrate: { frames: 3, fps: 4, playback: 'loop' },
-  think: { frames: 1, fps: 2, playback: 'loop' },
-  error: { frames: 2, fps: 8, playback: 'once' }
+  think: { frames: 1, fps: 2, playback: 'loop', motion: 'float' },
+  error: { frames: 2, fps: 8, playback: 'once', motion: 'shake' },
+  drag: { frames: 1, fps: 5, playback: 'loop', motion: 'tilt' }
 }
 // background-position 的百分比算的是「容器与图片的剩余空间」比例，不是元素宽度的倍数：
 // 图片宽是容器的 N 倍时，第 i 帧对应 i/(N-1)*100%。写 -i*100% 会算到画面外的空带，
@@ -450,12 +451,13 @@ function setAppearance(v, persist) {
     dshPlaying = ''
   } else {
     // 大肥鱼模式不吸附屏幕边缘、不镜像：清掉经典外观留下的贴边/翻转状态。
+    // 这里不 express()：改外观是在菜单里点的，窗口此刻是撑大的，移动会整窗跳一下；
+    // 关菜单时 shrink 后 snapCheck 会重排。
     state.h = null
     state.v = null
     state.hOff = state.left
     state.vOff = state.top
-    root.classList.remove('dshwv-left')
-    express()
+    root.classList.remove('dshwv-left', 'dshwv-top')
   }
   if (persist) saveConfig()
   renderDsh()
