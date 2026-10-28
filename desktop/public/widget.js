@@ -302,23 +302,31 @@ var DSH_NEXT_MIN_MS = 9 * 60 * 1000
 var DSH_NEXT_MAX_MS = 15 * 60 * 1000
 var DSH_IDLE_MS = 90 * 1000
 var DSH_WAKE_MS = 2500
+var DSH_ERROR_MS = 2500
+var DSH_CLICK_MS = 1500
 var dshDnd = false
 var dshSleeping = false
 var dshWakeUntil = 0
+var dshErrorUntil = 0
+var dshErrorArmed = false
+var dshClickUntil = 0
 var dshMode = ''
 var dshLastMode = ''
 var dshNextTimer = null
 var dshModeTimer = null
 var dshSleepTimer = null
 var dshWakeTimer = null
+var dshErrorTimer = null
 var dshWalkRaf = null
 var dshWalkDir = 1
 var dshWalkLast = 0
+var dshClickTimer = null
 function dshAsset(name) { return 'dsh/whale-girl/' + name + '.png' }
 function dshState() {
   if (drag && drag.active) return 'drag'
   if (dshDnd) return 'sleep' // 勿扰优先：连报错也不打断睡眠（数字/气泡照常显示）
-  if (state.status === 'error') return 'error'
+  if (Date.now() < dshClickUntil) return 'joy' // 单击：开心一下
+  if (state.status === 'error' && Date.now() < dshErrorUntil) return 'error'
   if (dshDnd) return 'sleep'
   if (Date.now() < dshWakeUntil) return 'wake'
   if (dshMode) return dshMode
@@ -477,9 +485,9 @@ function startDshMode() {
     armDshNext()
   }, pick.ms)
 }
-// 点击唤醒：睡着时先播 wake 再回 idle，并把入睡计时重新挂上。
+// 点击唤醒：睡着时先播 wake 再回 idle，并把入睡计时重新挂上。返回是否真的唤醒了。
 function dshUserWake() {
-  if (!dshAppearance || dshDnd || !dshSleeping) return
+  if (!dshAppearance || dshDnd || !dshSleeping) return false
   dshSleeping = false
   dshWakeUntil = Date.now() + DSH_WAKE_MS
   renderDsh()
@@ -490,6 +498,19 @@ function dshUserWake() {
     renderDsh()
     if (dshAmbientWanted()) armDshSleep()
   }, DSH_WAKE_MS)
+  return true
+}
+// 单击反应：醒着时播 1.5s joy 回应一下（睡着时走唤醒，不叠加）。
+function dshClickReaction() {
+  if (!dshAppearance || dshDnd) return
+  dshClickUntil = Date.now() + DSH_CLICK_MS
+  renderDsh()
+  clearTimeout(dshClickTimer)
+  dshClickTimer = setTimeout(function () {
+    dshClickTimer = null
+    dshClickUntil = 0
+    renderDsh()
+  }, DSH_CLICK_MS)
 }
 // walk：真的平移 OS 窗口（45px/s），顶到屏幕左右沿就掉头；朝向用 sprite 的镜像表达。
 function startDshWalk() {
@@ -520,8 +541,30 @@ function dshWalkStep(ts) {
   express()
   dshWalkRaf = requestAnimationFrame(dshWalkStep)
 }
+// 报错动画只播一轮：进入 error 给 2.5s 展示窗口，播完回到 idle/sleep。
+// 状态本身仍是 error（金额、气泡、状态卡照常显示），只是不再霸占精灵。
+function armDshError() {
+  if (state.status === 'error') {
+    if (dshErrorArmed) return
+    dshErrorArmed = true
+    dshErrorUntil = Date.now() + DSH_ERROR_MS
+    clearTimeout(dshErrorTimer)
+    dshErrorTimer = setTimeout(function () {
+      dshErrorTimer = null
+      renderDsh()
+    }, DSH_ERROR_MS)
+    return
+  }
+  if (dshErrorArmed) {
+    dshErrorArmed = false
+    dshErrorUntil = 0
+    clearTimeout(dshErrorTimer)
+    dshErrorTimer = null
+  }
+}
 function renderDsh() {
   if (!dshAppearance) return
+  armDshError()
   var name = dshState()
   var cfg = dshManifest && dshManifest.characters && dshManifest.characters['whale-girl']
   var sc = (cfg && cfg.states && cfg.states[name]) || DSH_FALLBACK[name]
@@ -1720,8 +1763,8 @@ function endDrag(e, clickAllowed) {
   root.classList.remove('dshwv-dragging')
   setWidgetCursor(isWhaleHit(e) ? 'grab' : '')
   if (clickAllowed && !drag.moved) {
-    // 点击鲸鱼：睡着时先醒来；同时轮换供应商并展开气泡展示数据
-    dshUserWake()
+    // 单击（位移 < 4px）：睡着先唤醒，否则开心一下；同时轮换供应商并展开气泡
+    if (!dshUserWake()) dshClickReaction()
     cycleProvider()
     showBubble()
     return
