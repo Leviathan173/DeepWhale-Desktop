@@ -273,12 +273,33 @@ var dshFrame = 0
 var dshManifest = null
 var dshPlaying = ''
 var DSH_STATE_LABELS = { loading: '正在连接', changing: '余额变化', ok: '准备好了', error: '请求失败' }
+// 余额状态之外的精灵按这份作息表自动轮转，每个仍用 manifest 自己的 playback 语义播放
+// （loop / pingpong / once / blink）。drag 不排程：真拖窗口时才切。
+var DSH_AMBIENT = [
+  { state: 'idle', ms: 8000 },
+  { state: 'working', ms: 5000 },
+  { state: 'joy', ms: 3000 },
+  { state: 'walk', ms: 5000 },
+  { state: 'wait', ms: 3500 },
+  { state: 'eat', ms: 2500 },
+  { state: 'play', ms: 3500 },
+  { state: 'welcome', ms: 2500 },
+  { state: 'disappointed', ms: 3000 },
+  { state: 'sleep', ms: 12000 },
+  { state: 'wake', ms: 3000 }
+]
+var dshAmbientIdx = -1
+var dshAmbientTimer = null
+var dshWalkRaf = null
+var dshWalkDir = 1
+var dshWalkLast = 0
 function dshAsset(name) { return 'dsh/whale-girl/' + name + '.png' }
 function dshState() {
+  if (drag && drag.active) return 'drag'
   if (state.status === 'error') return 'error'
   if (state.status === 'loading') return 'think'
   if (state.status === 'changing') return 'celebrate'
-  return 'idle'
+  return DSH_AMBIENT[Math.max(0, dshAmbientIdx)].state
 }
 // 帧图用百分比尺寸，随窗口缩放自动跟着变大变小（manifest 的 110px 只适合网页端）。
 // manifest 拉取失败时按这套兜底，避免精灵层空白导致宠物整个消失。
@@ -344,6 +365,57 @@ function playDsh(name, sc, frames) {
   }
   dshAnimTimer = setTimeout(step, mode === 'blink' ? 3000 + Math.random() * 6000 : frameMs)
 }
+// 作息表只在「余额正常、没拖拽、没开菜单」时跑；其余时候停表，恢复后从 idle 重来。
+function dshAmbientWanted() {
+  // 作息表依赖 manifest 的帧数/播放语义，拉取失败就退回只放 idle
+  return dshAppearance && dshManifest !== null && state.status === 'ok' && !menuOpen && !(drag && drag.active)
+}
+function syncDshAmbient() {
+  if (!dshAmbientWanted()) {
+    clearTimeout(dshAmbientTimer)
+    dshAmbientTimer = null
+    dshAmbientIdx = -1
+    return
+  }
+  if (dshAmbientTimer) return
+  dshAmbientIdx = -1
+  stepDshAmbient()
+}
+function stepDshAmbient() {
+  dshAmbientIdx = (dshAmbientIdx + 1) % DSH_AMBIENT.length
+  renderDsh()
+  clearTimeout(dshAmbientTimer)
+  dshAmbientTimer = setTimeout(stepDshAmbient, DSH_AMBIENT[dshAmbientIdx].ms)
+}
+// walk：真的平移 OS 窗口（45px/s），顶到屏幕左右沿就掉头；朝向用 sprite 的镜像表达。
+function startDshWalk() {
+  if (dshWalkRaf !== null) return
+  dshWalkDir = Math.random() < 0.5 ? 1 : -1
+  dshSprite.style.transform = dshWalkDir > 0 ? 'scaleX(-1)' : ''
+  dshWalkLast = 0
+  dshWalkRaf = requestAnimationFrame(dshWalkStep)
+}
+function stopDshWalk() {
+  if (dshWalkRaf !== null) cancelAnimationFrame(dshWalkRaf)
+  dshWalkRaf = null
+  dshSprite.style.transform = ''
+}
+function dshWalkStep(ts) {
+  if (dshPlaying !== 'walk' || !dshAmbientWanted()) { stopDshWalk(); return }
+  var dt = Math.min(0.1, dshWalkLast ? (ts - dshWalkLast) / 1000 : 0)
+  dshWalkLast = ts
+  var w = winSize.w || viewport().w
+  var max = Math.max(0, SCREEN.w - w)
+  var next = state.left + dshWalkDir * 45 * dt
+  if (next <= 0 || next >= max) {
+    dshWalkDir = -dshWalkDir
+    dshSprite.style.transform = dshWalkDir > 0 ? 'scaleX(-1)' : ''
+    next = clamp(next, 0, max)
+  }
+  state.left = next
+  express()
+  dshWalkRaf = requestAnimationFrame(dshWalkStep)
+}
 function renderDsh() {
   if (!dshAppearance) return
   var name = dshState()
@@ -357,6 +429,9 @@ function renderDsh() {
   dshPlaying = name
   dshSprite.style.backgroundImage = 'url("' + dshAsset(name) + '")'
   dshSprite.style.backgroundSize = (frames * 100) + '% 100%'
+  dshStage.dataset.motion = (sc && sc.motion) || ''
+  if (name === 'walk') startDshWalk()
+  else stopDshWalk()
   playDsh(name, sc, frames)
 }
 function setAppearance(v, persist) {
@@ -368,10 +443,23 @@ function setAppearance(v, persist) {
   if (!dshAppearance) {
     clearTimeout(dshAnimTimer)
     dshAnimTimer = null
+    clearTimeout(dshAmbientTimer)
+    dshAmbientTimer = null
+    dshAmbientIdx = -1
+    stopDshWalk()
     dshPlaying = ''
+  } else {
+    // 大肥鱼模式不吸附屏幕边缘、不镜像：清掉经典外观留下的贴边/翻转状态。
+    state.h = null
+    state.v = null
+    state.hOff = state.left
+    state.vOff = state.top
+    root.classList.remove('dshwv-left')
+    express()
   }
   if (persist) saveConfig()
   renderDsh()
+  syncDshAmbient()
 }
 var busy = false
 var settleTimer = null
@@ -768,6 +856,7 @@ function animateAmount(from, to, currency, duration) {
 }
 function render() {
   renderDsh()
+  syncDshAmbient()
   root.classList.toggle('dshwv-classic', !dshAppearance)
   if (bubbleRandomActive && bubbleRandomLines) {
     applyBubbleLines(bubbleRandomLines)
@@ -840,7 +929,7 @@ function express() {
   try {
     apiMoveWindow(Math.round(state.left), Math.round(state.top))
   } catch (err) {}
-  root.classList.toggle('dshwv-left', state.h === 'left')
+  root.classList.toggle('dshwv-left', !dshAppearance && state.h === 'left')
   syncHang()
 }
 var lastWin = null
@@ -1190,6 +1279,7 @@ function toggleMenu() {
   }
   menuBox.classList.toggle('dshwv-menu-open', menuOpen)
   if (menuOpen) menuBtn.classList.add('dshwv-menu-btn-visible')
+  syncDshAmbient()
 }
 // 菜单弹出的方案：窗口临时扩大到「鲸鱼 base 框 ∪ 菜单框」的并集（菜单比小窗宽/高
 // 都常见），root 用 left/bottom 偏移抵消窗口扩张，鲸鱼在屏幕上纹丝不动；
@@ -1271,9 +1361,19 @@ function closeMenu() {
     menuBox.classList.remove('dshwv-menu-open')
   }
   snapCheck()
+  syncDshAmbient()
   recheckPassThrough()
 }
 function snapCheck() {
+  if (dshAppearance) {
+    // 大肥鱼模式不做边缘吸附：只保证窗口留在屏内、不留贴边锚点
+    state.h = null
+    state.v = null
+    state.hOff = state.left
+    state.vOff = state.top
+    express()
+    return
+  }
   // 小窗模型：用窗口在屏幕上的坐标判断贴边/贴角
   var w = winSize.w || viewport().w
   var h = winSize.h || viewport().h
@@ -1432,6 +1532,8 @@ function onDocPointerDown(e) {
     moved: false
   }
   root.classList.add('dshwv-dragging')
+  renderDsh()
+  syncDshAmbient()
   pressDown()
   setWidgetCursor('grabbing')
   document.addEventListener('pointermove', onDocPointerMove, true)
@@ -1500,6 +1602,8 @@ function endDrag(e, clickAllowed) {
   setWidgetCursor(isWhaleHit(e) ? 'grab' : '')
   if (clickAllowed && !drag.moved) {
     // 点击鲸鱼：轮换到下一个已启用供应商，并展开气泡展示其数据
+    renderDsh()
+    syncDshAmbient()
     cycleProvider()
     showBubble()
     return
@@ -1508,6 +1612,19 @@ function endDrag(e, clickAllowed) {
   var dy = e.screenY - drag.startScreenY
   var left = clamp(drag.origLeft + dx, 0, Math.max(0, SCREEN.w - drag.w))
   var top = clamp(drag.origTop + dy, 0, Math.max(0, SCREEN.h - drag.h))
+  state.left = left
+  state.top = top
+  if (dshAppearance) {
+    // 大肥鱼模式：落在哪就停在哪，不吸附、不镜像
+    state.h = null
+    state.v = null
+    state.hOff = left
+    state.vOff = top
+    settle()
+    renderDsh()
+    syncDshAmbient()
+    return
+  }
   var centerX = left + drag.w / 2
   var centerY = top + drag.h / 2
   if (centerX < SCREEN.w / 4) {
@@ -1680,6 +1797,7 @@ function loadAssets() {
     dshManifest = manifest
     dshPlaying = '' // 让已播状态按 manifest 的帧数/帧率重播一次
     renderDsh()
+    syncDshAmbient()
   }).catch(function () {})
 }
 loadAssets()

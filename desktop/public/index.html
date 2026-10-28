@@ -26,6 +26,16 @@
      .dshwv-root.dshwv-top .dshwv-img{top:0}
      .dshwv-dsh-stage{position:absolute;right:calc(var(--dshw-base) * .04);bottom:calc(var(--dshw-base) * .03);width:calc(var(--dshw-base) * .62);height:calc(var(--dshw-base) * .62);pointer-events:none;z-index:2;filter:drop-shadow(0 8px 7px rgba(0,0,0,.36))}
      .dshwv-dsh-sprite{position:absolute;inset:0;background-repeat:no-repeat;background-position:0 0;background-size:100% 100%;image-rendering:auto}
+     /* manifest 的 motion 字段：动效挂 stage（sprite 的 transform 留给走路朝向翻转）。 */
+     .dshwv-dsh-stage[data-motion="tilt"]{animation:dshwv-tilt 1.2s ease-in-out infinite}
+     .dshwv-dsh-stage[data-motion="wiggle"]{animation:dshwv-wiggle 1.2s ease-in-out infinite}
+     .dshwv-dsh-stage[data-motion="shake"]{animation:dshwv-shake .4s linear infinite}
+     .dshwv-dsh-stage[data-motion="float"]{animation:dshwv-float 2.6s ease-in-out infinite}
+     @keyframes dshwv-tilt{0%,100%{transform:rotate(0)}30%{transform:rotate(-4deg)}70%{transform:rotate(4deg)}}
+     @keyframes dshwv-wiggle{25%{transform:rotate(-2deg)}75%{transform:rotate(2deg)}}
+     @keyframes dshwv-shake{25%{transform:translateX(-3px)}75%{transform:translateX(3px)}}
+     @keyframes dshwv-float{50%{transform:translateY(-4px)}}
+     @media (prefers-reduced-motion:reduce){.dshwv-dsh-stage[data-motion]{animation:none}}
      .dshwv-dsh-pulse{position:absolute;right:70%;bottom:72%;min-width:118px;max-width:170px;padding:8px 11px;color:#f1f2f4;background:rgba(37,38,40,.97);border:1px solid rgba(255,255,255,.12);border-radius:11px;box-shadow:0 8px 20px rgba(0,0,0,.3);font-family:"Segoe UI Variable Text","Segoe UI","Microsoft YaHei UI",system-ui,sans-serif;opacity:0;transform:translateY(5px) scale(.98);transition:opacity .13s ease,transform .16s ease;pointer-events:none}
      .dshwv-dsh-stage:hover .dshwv-dsh-pulse,.dshwv-dsh-error .dshwv-dsh-pulse{opacity:1;transform:none}
      .dshwv-dsh-state{display:block;font-size:12px;font-weight:650;white-space:nowrap}
