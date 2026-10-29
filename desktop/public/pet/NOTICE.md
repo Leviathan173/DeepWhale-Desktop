@@ -7,42 +7,47 @@ This project includes the desktop-pet animation clips from:
 - License: MIT, Copyright (c) 2026 PC2005-cloud (see LICENSE in this directory)
 - Character design credit: ZipZipPipe; character upstream: https://github.com/vlln/whale-girl
 
-All 106 clips are the original VP9-alpha webm files (640×360), renamed from their
-Chinese file names to the pinyin names used by the upstream preview script
-(`scripts/encode_preview_gifs.py`, `PINYIN` table). No re-encoding was done.
+The 106 clips here are **960×540** VP9-alpha webm files (upstream ships 640×360).
+They were rebuilt from the upstream 1280×720 green-screen sources and renamed to
+the pinyin names used by the upstream preview script
+(`scripts/encode_preview_gifs.py`, `PINYIN` table).
 
 `manifest.json` in this directory is ours: it maps our widget states
-(`states`) and the random ambient action pool (`modes`) onto those clips. The
-`label` field keeps the original Chinese animation name.
+(`states`), the random ambient action pool (`modes`), the click responses
+(`clicks`) and the balance tiers (`balance`) onto those clips. The `label` field
+keeps the original Chinese animation name.
 
 These clips are used as the default DSH appearance. The original project's license
 and attribution are retained here; this notice does not change the license of the
 surrounding project.
 
-## Rebuilding at a higher resolution
+## How the 960×540 set was built
 
-The shipped clips are 640×360. Higher-resolution sources exist upstream:
+Sources: the `assets-videos` release (182MB) — `video/*.mp4`, 1280×720 H.264,
+green screen, with a `豆包AI生成` watermark in the bottom-right corner. The
+`assets-mov` release is 640×360 HEVC-alpha and offers no extra detail.
 
-- `assets-videos` release: `video/*.mp4`, 1280×720 H.264 with a green background
-  and a `豆包AI生成` watermark in the bottom-right corner.
-- `assets-mov` release: 640×360 HEVC-alpha (same resolution, for Safari) — no gain.
+Per clip:
 
-Upstream's own pipeline (in the dsh-pet repo under `scripts/`) is
-`watermark_step01.py → chroma_step02.py → normalize_step03.py → encode_*.py`:
-watermark fill, HSV-based chroma key at 1280×720, then normalization onto a
-2160×1215 canvas (standing height 900px, feet at y=1115, centered at x=1080),
-then the 640×360 playback encode.
+1. `chroma_step02.py` from the upstream repo (HSV hue-based keying at 1280×720,
+   outputs VP9-alpha at CRF30), with `-vf delogo=x=1055:y=625:w=190:h=80` added on
+   the decode side to erase the watermark. The character never enters that corner,
+   so `delogo` is enough; no per-pixel fill step was needed.
+2. Normalization and the playback encode, using the same geometry as upstream's
+   `normalize_step03.py` but at 540p: standing height 400px, feet at y=495.6,
+   centered at x=480 on a 960×540 transparent canvas
+   (= upstream's 900 / 1115 / 1080 on 2160×1215, ×540/1215), then
+   `libvpx-vp9 -pix_fmt yuva420p -crf 50 -b:v 0 -auto-alt-ref 0`.
+   `despill=type=green` is applied after the scale because upstream's chroma step
+   has no despill and leaves a visible green rim at 720p.
 
-Pitfalls found while rebuilding (do not repeat):
+Notes for anyone rebuilding this:
 
-- Use `colorkey` (RGB distance) for the chrome key on these sources.
-  `chromakey` (YUV distance) keys the character itself and leaves only edge
-  fringes — verified on `待机呼吸休闲`.
-- The watermark box is `x=1055:y=625:w=190:h=80`; `delogo` with that box is
-  enough (the character never enters that corner).
-- A straight ffmpeg re-encode comes out darker/greyer than the shipped clips
-  (upstream converts to BT.601 explicitly in numpy). To match the current look
-  exactly, run upstream's `chroma_step02.py` + `normalize_step03.py` and only
-  change the final encode size/CRF.
-- Re-encoding all 106 clips at 960×540 CRF42 yields ~1.07MB per clip
-  (~110MB total, vs 51.8MB now), so it is not shipped by default.
+- Decode the step02/step03 intermediates with `-c:v libvpx-vp9`; ffmpeg's default
+  decoder drops the alpha plane and you get the raw green background instead.
+- `chromakey` (YUV distance) is wrong for these sources — it keys the character
+  itself and leaves only edge fringes. Use upstream's HSV keying (or `colorkey`).
+- Upstream's `video/碎碎念-*.mp4` files are actually named `岁岁念-*.mp4` in the
+  archive (typo). Rename them before mapping pinyin names.
+- Resulting size: ~105MB for 106 clips (vs 51.8MB for the 640×360 set), which is
+  why the app is ~120MB instead of ~70MB.

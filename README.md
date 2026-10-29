@@ -17,7 +17,7 @@
   - Claude Code 记账：读取 `~/.claude/projects/**` 的 jsonl 用量记录
   - 计价表：供应商/模型单价四段拆分（输入/输出/缓存读/缓存写）+ 峰谷两档（周末全天低谷价，2026-08-23 起）；未配置模型自动套内置官方价
 - 🎚️ **汉堡菜单**（悬停鲸鱼出现）：外观切换（大肥鱼 / 大肥鱼·帧动画 / 余额鲸鱼）、大小缩放、音效切换等
-- 🐳 **三套外观**：默认「大肥鱼」= [dsh-pet](https://github.com/PC2005-cloud/dsh-pet) 的 106 段透明视频（待机呼吸、螃蟹走路、被抓起悬空、惊醒等状态 + 移动/小动作/玩耍/吃什么/时节/文字/碎碎念 七类共 85 段随机动作）；可切「大肥鱼·帧动画」（鲸鱼娘精灵图）或原「余额鲸鱼」。素材全部离线内嵌，不依赖 DSH 服务
+- 🐳 **三套外观**：默认「大肥鱼」= [dsh-pet](https://github.com/PC2005-cloud/dsh-pet) 的 106 段透明视频（960×540，待机呼吸、螃蟹走路、被抓起悬空、惊醒等状态 + 移动/小动作/玩耍/吃什么/时节/文字/碎碎念 七类共 85 段随机动作）；可切「大肥鱼·帧动画」（鲸鱼娘精灵图）或原「余额鲸鱼」。素材全部离线内嵌，不依赖 DSH 服务
 - 🎞️ **随机作息（每小时约 20 次）**：视频外观按片段真实时长播完一段（间隔 2–4 分钟，单段 1.5–15 秒），三个走路动作会真的平移窗口；睡姿用「原地小憩沉眠」并**定格在第 155 帧**（再往后角色会站起来）；单击 = 挤压弹动 + 随机一段「点击回应」；余额提示时按余量播对应的 6 档「余额-」动画（百炼按已用百分比，金额型每 25 元一档、≥125 元算满档）。帧动画外观仍是 15 个精灵（`loop / pingpong / once / blink` 语义）。醒着待机 90 秒后入睡，点一下鲸鱼唤醒；菜单「勿扰」常睡；大肥鱼模式不吸附屏幕边缘、不镜像
 - 🔊 **音效**：按压/松手音效，三套可选（小黄鸭 / 音效1 / 鲸语，缺失时静默降级）
 - 💬 **随机台词**：点击气泡切换台词段，5 秒自动收起；**碎碎念同步语音配音**（百炼 qwen-audio-3.0-tts-plus 离线生成、内嵌播放）
@@ -142,7 +142,7 @@ cargo run --bin tts_gen            # 幂等：已存在的 mp3 跳过；改文�
 
 ## 大肥鱼外观素材（第三方）
 
-默认外观「大肥鱼」用 `desktop/public/pet/` 下的 106 段 VP9-alpha 透明视频，取自 [PC2005-cloud/dsh-pet](https://github.com/PC2005-cloud/dsh-pet)（MIT，commit `2960493`），角色设计署名 ZipZipPipe、角色上游 [vlln/whale-girl](https://github.com/vlln/whale-girl)。文件按上游预览脚本的拼音表重命名，视频本身未转码；`manifest.json` 是我们的状态映射（`states` = 状态，`modes` = 随机动作池，`label` 保留上游中文动画名）。许可与署名见 `desktop/public/pet/NOTICE.md` 与同目录 `LICENSE`。
+默认外观「大肥鱼」用 `desktop/public/pet/` 下的 106 段 VP9-alpha 透明视频（2026-10-29 起为 **960×540**，由上游 1280×720 绿幕母版重做），取自 [PC2005-cloud/dsh-pet](https://github.com/PC2005-cloud/dsh-pet)（MIT，commit `2960493`），角色设计署名 ZipZipPipe、角色上游 [vlln/whale-girl](https://github.com/vlln/whale-girl)。文件按上游预览脚本的拼音表重命名；`manifest.json` 是我们的状态映射（`states` = 状态、`modes` = 随机动作池、`clicks` = 点击回应、`balance` = 余额档位，`label` 保留上游中文动画名）。重建链路与踩过的坑见 `desktop/public/pet/NOTICE.md`，许可与署名见同目录 `LICENSE`。
 
 「大肥鱼·帧动画」用 `desktop/public/dsh/` 下的精灵图与 `manifest.json`，取自 [vlln/whale-girl](https://github.com/vlln/whale-girl)（MIT），角色设计署名 ZipZipPipe。许可与署名见 `desktop/public/dsh/NOTICE.md` 与同目录 `LICENSE`，发布包会一并携带。两套外观都能在鲸鱼菜单「外观」里切，也能一键切回原素材。
 

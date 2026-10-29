@@ -336,9 +336,8 @@ var DSH_NEXT_MAX_MS = 4 * 60 * 1000
 var DSH_IDLE_MS = 90 * 1000
 var DSH_WAKE_MS = 2500
 var DSH_ERROR_MS = 2500
-// 点击回应片段比挤压长，播 3.5 秒就够（片段本身 10 秒，后面的收尾是重复动作）
+// 点击回应 / 余额档位的兜底时长：metadata 到了会按片段真实时长（~10s）覆盖
 var DSH_CLICK_MS = 3500
-// 余额档位动画：和气泡同寿命，5 秒
 var DSH_BALANCE_MS = 5000
 var dshDnd = false
 var dshSleeping = false
@@ -530,12 +529,35 @@ function armDshModeTimer(ms) {
     armDshNext()
   }, ms)
 }
-// 视频时长就是这次动作的时长（clip 3–12s），比写死 ms 更贴合。
+// 片段时长决定这次展示多久（clip 3–12s），比写死 ms 更贴合：
+// 之前点击回应写死 3.5s、余额档位写死 5s，而片段本身 10s，动画会被截断在半路。
 function onDshVideoMeta(e) {
-  if (!dshPet || !dshMode) return
+  if (!dshPet) return
   var v = e && e.currentTarget
   var d = v ? v.duration : 0
   if (!isFinite(d) || d <= 0) return
+  var ms = Math.min(20000, d * 1000)
+  if (dshClickKey && Date.now() < dshClickUntil) {
+    dshClickUntil = Date.now() + ms
+    clearTimeout(dshClickTimer)
+    dshClickTimer = setTimeout(function () {
+      dshClickTimer = null
+      dshClickUntil = 0
+      renderDsh()
+    }, ms)
+    return
+  }
+  if (dshBalanceKey && Date.now() < dshBalanceUntil) {
+    dshBalanceUntil = Date.now() + ms
+    clearTimeout(dshBalanceTimer)
+    dshBalanceTimer = setTimeout(function () {
+      dshBalanceTimer = null
+      dshBalanceUntil = 0
+      renderDsh()
+    }, ms)
+    return
+  }
+  if (!dshMode) return
   armDshModeTimer(Math.max(1500, Math.min(15000, d * 1000)))
 }
 function startDshMode() {
@@ -637,6 +659,7 @@ function playDshClick() {
   clearTimeout(dshBalanceTimer)
   dshBalanceTimer = null
   dshClickKey = f
+  // 先用 3.5s 兜底，metadata 到了会改成片段的真实时长（onDshVideoMeta）
   dshClickUntil = Date.now() + DSH_CLICK_MS
   dshPlaying = '' // 同一段可能刚播过，强制重播一次
   renderDsh()
@@ -646,6 +669,8 @@ function playDshClick() {
     dshClickUntil = 0
     renderDsh()
   }, DSH_CLICK_MS)
+  // 回应动画变长了，别播到一半就入睡姿：把 90s 入睡计时重新挂上
+  if (!dshSleeping) armDshSleep()
 }
 // 余额档位：0..5（0 满溢 … 5 分文不剩），两种口径：
 // - 百炼：后端给 "80.8%" 这种带百分号的剩余额度字符串，按已用百分比分档（每 20% 一档）
@@ -764,10 +789,15 @@ function dshShowVideo(clip) {
     swapped = true
     next.removeEventListener('playing', swap)
     clearTimeout(fallback)
+    // 不依赖调用时的 cur：把「除 next 以外」全部关掉并暂停，连起来几次切换也不会留下
+    // 一个「可见但已暂停」的旧片段（之前的错位就是这么来的）
+    DSH_VIDS.forEach(function (v) {
+      if (v === next) return
+      v.classList.remove('dshwv-video-on')
+      v.pause()
+    })
     next.classList.add('dshwv-video-on')
-    cur.classList.remove('dshwv-video-on')
-    cur.pause()
-    dshVidIdx = 1 - dshVidIdx
+    dshVidIdx = DSH_VIDS.indexOf(next)
     dshVidFile = clip.file
     if (dshStopSec(clip)) dshFreezeAt(next, dshStopSec(clip))
   }
