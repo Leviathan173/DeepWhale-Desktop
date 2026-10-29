@@ -39,18 +39,34 @@ dshStage.className = 'dshwv-dsh-stage'
 var dshSprite = document.createElement('div')
 dshSprite.className = 'dshwv-dsh-sprite'
 // 视频外观（dsh-pet 素材）：一个状态一段 VP9-alpha webm，和精灵图互斥显示。
-var dshVideo = document.createElement('video')
-dshVideo.className = 'dshwv-dsh-video'
-dshVideo.muted = true
-dshVideo.playsInline = true
-dshVideo.preload = 'auto'
-dshVideo.setAttribute('muted', '')
-dshVideo.setAttribute('disablepictureinpicture', '')
-dshVideo.addEventListener('loadedmetadata', onDshVideoMeta)
+// 两路交替用：换片段时先让新的一路解码出首帧再淡入，避免单元素换 src 时整只消失一帧
+//（拖拽/切动作的闪烁就是这么来的）。
+var DSH_VIDS = [dshMakeVideo(), dshMakeVideo()]
+var dshVidIdx = 0
+var dshVidFile = ''
+function dshMakeVideo() {
+  var v = document.createElement('video')
+  v.className = 'dshwv-dsh-video'
+  v.muted = true
+  v.playsInline = true
+  v.preload = 'auto'
+  v.setAttribute('muted', '')
+  v.setAttribute('disablepictureinpicture', '')
+  v.addEventListener('loadedmetadata', onDshVideoMeta)
+  return v
+}
+function dshVideoPlay(v) {
+  var p = v.play()
+  if (p && p.catch) p.catch(function () {})
+}
+function dshPauseVideos() {
+  DSH_VIDS.forEach(function (v) { v.pause() })
+}
 var dshPulse = document.createElement('div')
 dshPulse.className = 'dshwv-dsh-pulse'
 dshPulse.innerHTML = '<span class="dshwv-dsh-state"></span><span class="dshwv-dsh-detail"></span>'
-dshStage.appendChild(dshVideo)
+dshStage.appendChild(DSH_VIDS[0])
+dshStage.appendChild(DSH_VIDS[1])
 dshStage.appendChild(dshSprite)
 dshStage.appendChild(dshPulse)
 
@@ -295,10 +311,12 @@ var dshFrame = 0
 var dshManifest = null
 var petClips = null
 var petModes = []
+var petClicks = []
+var petBalance = []
 var dshWalking = false
 var dshPlaying = ''
 var DSH_STATE_LABELS = { loading: '正在连接', changing: '余额变化', ok: '准备好了', error: '请求失败' }
-// 随机作息：平均 12 分钟一次（每小时 5 次），每次随机挑一个动作播完回 idle；
+// 随机作息：平均 3 分钟一次（每小时 20 次），每次随机挑一个动作播完回 idle；
 // 醒着待机 90s 后入睡，点一下鲸鱼会唤醒。勿扰模式常睡。每个动作仍用 manifest
 // 自己的 playback 语义（loop / pingpong / once / blink）。
 var DSH_MODES = [
@@ -313,11 +331,15 @@ var DSH_MODES = [
   { state: 'celebrate', ms: 3000 },
   { state: 'think', ms: 4000 }
 ]
-var DSH_NEXT_MIN_MS = 9 * 60 * 1000
-var DSH_NEXT_MAX_MS = 15 * 60 * 1000
+var DSH_NEXT_MIN_MS = 2 * 60 * 1000
+var DSH_NEXT_MAX_MS = 4 * 60 * 1000
 var DSH_IDLE_MS = 90 * 1000
 var DSH_WAKE_MS = 2500
 var DSH_ERROR_MS = 2500
+// 点击回应片段比挤压长，播 3.5 秒就够（片段本身 10 秒，后面的收尾是重复动作）
+var DSH_CLICK_MS = 3500
+// 余额档位动画：和气泡同寿命，5 秒
+var DSH_BALANCE_MS = 5000
 var dshDnd = false
 var dshSleeping = false
 var dshWakeUntil = 0
@@ -333,12 +355,21 @@ var dshErrorTimer = null
 var dshWalkRaf = null
 var dshWalkDir = 1
 var dshWalkLast = 0
+// 单击回应 / 余额档位：都是「播一小段就回 idle」的临时片段（值是 manifest 里的文件名）
+var dshClickKey = ''
+var dshClickUntil = 0
+var dshClickTimer = null
+var dshBalanceKey = ''
+var dshBalanceUntil = 0
+var dshBalanceTimer = null
 function dshAsset(name) { return 'dsh/whale-girl/' + name + '.png' }
 function dshState() {
   // 死区：按下但还没移动出阈值不算拖拽，保持原姿势，否则单击会闪一下 drag
   if (drag && drag.active && drag.moved) return 'drag'
   if (dshDnd) return 'sleep' // 勿扰优先：连报错也不打断睡眠（数字/气泡照常显示）
   if (state.status === 'error' && Date.now() < dshErrorUntil) return 'error'
+  if (dshPet && dshClickKey && Date.now() < dshClickUntil) return dshClickKey
+  if (dshPet && dshBalanceKey && Date.now() < dshBalanceUntil) return dshBalanceKey
   if (Date.now() < dshWakeUntil) return 'wake'
   if (dshMode) return dshMode
   if (dshSleeping) return 'sleep'
@@ -500,9 +531,10 @@ function armDshModeTimer(ms) {
   }, ms)
 }
 // 视频时长就是这次动作的时长（clip 3–12s），比写死 ms 更贴合。
-function onDshVideoMeta() {
+function onDshVideoMeta(e) {
   if (!dshPet || !dshMode) return
-  var d = dshVideo.duration
+  var v = e && e.currentTarget
+  var d = v ? v.duration : 0
   if (!isFinite(d) || d <= 0) return
   armDshModeTimer(Math.max(1500, Math.min(15000, d * 1000)))
 }
@@ -539,7 +571,7 @@ function dshUserWake() {
 function dshFlip(on) {
   var t = on ? 'scaleX(-1)' : ''
   dshSprite.style.transform = t
-  dshVideo.style.transform = t
+  DSH_VIDS.forEach(function (v) { v.style.transform = t })
 }
 function startDshWalk() {
   if (dshWalkRaf !== null) return
@@ -593,6 +625,55 @@ function armDshError() {
 function dshPetClip(name) {
   return petClips ? petClips[name] : null
 }
+// 单击回应：从 manifest 的 clicks 里随机挑一段（尽量不连着重复），窗口 3.5s。
+// 挤压弹动由 pressDown/pressUp 同时做，两者叠加就是「Q 弹 + 回应动作」。
+function playDshClick() {
+  if (!dshPet || !petClips || !petClicks.length) return
+  var f = petClicks[Math.floor(Math.random() * petClicks.length)]
+  if (f === dshClickKey) f = petClicks[(petClicks.indexOf(f) + 1) % petClicks.length]
+  // 点了就是在看余额/逗它，余额档位动画让位给点击回应
+  dshBalanceKey = ''
+  dshBalanceUntil = 0
+  clearTimeout(dshBalanceTimer)
+  dshBalanceTimer = null
+  dshClickKey = f
+  dshClickUntil = Date.now() + DSH_CLICK_MS
+  dshPlaying = '' // 同一段可能刚播过，强制重播一次
+  renderDsh()
+  clearTimeout(dshClickTimer)
+  dshClickTimer = setTimeout(function () {
+    dshClickTimer = null
+    dshClickUntil = 0
+    renderDsh()
+  }, DSH_CLICK_MS)
+}
+// 余额档位：0..5 按「已用百分比」分档（0 几乎没用 / 4 快见底 / 5 用满）。
+// 后端给的是 "80.8%" 这种带百分号的字符串（剩余额度）；金额型供应商（DeepSeek / 梭子蟹）
+// 没有分母，返回 -1 不播。
+function dshBalanceTier() {
+  if (state.provider !== 'bailian') return -1
+  var b = state.bailian
+  if (!b || !b.ok || b.remaining == null) return -1
+  var rem = parseFloat(String(b.remaining))
+  if (!isFinite(rem)) return -1
+  var used = Math.max(0, Math.min(100, 100 - rem))
+  return used >= 100 ? 5 : Math.floor(used / 20)
+}
+function playDshBalance() {
+  if (!dshPet || !petClips || !petBalance.length) return
+  var tier = dshBalanceTier()
+  if (tier < 0) return
+  dshBalanceKey = petBalance[tier]
+  dshBalanceUntil = Date.now() + DSH_BALANCE_MS
+  dshPlaying = ''
+  renderDsh()
+  clearTimeout(dshBalanceTimer)
+  dshBalanceTimer = setTimeout(function () {
+    dshBalanceTimer = null
+    dshBalanceUntil = 0
+    renderDsh()
+  }, DSH_BALANCE_MS)
+}
 function renderDsh() {
   if (!dshAppearance) return
   armDshError()
@@ -607,7 +688,7 @@ function renderDsh() {
   else stopDshWalk()
 }
 function renderDshSprite(name) {
-  dshVideo.pause()
+  dshPauseVideos()
   if (dshPlaying === name) return
   dshPlaying = name
   var cfg = dshManifest && dshManifest.characters && dshManifest.characters['whale-girl']
@@ -623,11 +704,44 @@ function renderDshVideo(name) {
   if (!clip || dshPlaying === name) return
   dshPlaying = name
   dshStage.dataset.motion = '' // 视频自带动作，不再叠 CSS 动效
-  dshVideo.loop = !!clip.loop
+  dshShowVideo(clip)
+}
+// 换片段：新的一路先 play()，等它真的出帧（playing）再淡入、把旧的淡出暂停。
+// 同一文件（sleep 复用待机片段）不换元素，只改速率，避免重新解码。
+var dshSwapSeq = 0
+function dshShowVideo(clip) {
+  var cur = DSH_VIDS[dshVidIdx]
+  if (dshVidFile === clip.file) {
+    cur.loop = !!clip.loop
+    cur.playbackRate = clip.rate || 1
+    // 一次性片段（点击回应/余额档位/wake）重播时从头开始，别停在上一轮的尾帧
+    if (!clip.loop) cur.currentTime = 0
+    dshVideoPlay(cur)
+    return
+  }
+  var next = DSH_VIDS[1 - dshVidIdx]
+  next.loop = !!clip.loop
+  next.playbackRate = clip.rate || 1
   var src = 'pet/' + clip.file
-  if (dshVideo.getAttribute('src') !== src) dshVideo.setAttribute('src', src)
-  var p = dshVideo.play()
-  if (p && p.catch) p.catch(function () {})
+  if (next.getAttribute('src') !== src) next.setAttribute('src', src)
+  var seq = ++dshSwapSeq
+  var swapped = false
+  function swap() {
+    // 换了两次片段时只认最后一次，别让旧的回调把画面切回去
+    if (swapped || seq !== dshSwapSeq) return
+    swapped = true
+    next.removeEventListener('playing', swap)
+    clearTimeout(fallback)
+    next.classList.add('dshwv-video-on')
+    cur.classList.remove('dshwv-video-on')
+    cur.pause()
+    dshVidIdx = 1 - dshVidIdx
+    dshVidFile = clip.file
+  }
+  // 解码失败/卡住也要换过去，不然会一直显示上一段
+  var fallback = setTimeout(swap, 600)
+  next.addEventListener('playing', swap)
+  dshVideoPlay(next)
 }
 function setAppearance(v, persist) {
   state.appearance = v === 'classic' ? 'classic' : v === 'dsh' ? 'dsh' : 'pet'
@@ -637,9 +751,19 @@ function setAppearance(v, persist) {
   root.classList.toggle('dshwv-classic', !dshAppearance)
   dshStage.hidden = !dshAppearance
   dshStage.classList.toggle('dshwv-pet', dshPet)
-  dshVideo.pause()
+  root.classList.toggle('dshwv-pet', dshPet)
+  dshPauseVideos()
   // 两套素材的状态名不同（视频外观的随机动作 key 是文件名），切外观要重挑。
   dshPlaying = ''
+  // 点击回应 / 余额档位只有视频外观有，切走时一起清掉（别让文件名漏进精灵图查表）
+  dshClickKey = ''
+  dshClickUntil = 0
+  clearTimeout(dshClickTimer)
+  dshClickTimer = null
+  dshBalanceKey = ''
+  dshBalanceUntil = 0
+  clearTimeout(dshBalanceTimer)
+  dshBalanceTimer = null
   if (!dshAppearance) {
     clearTimeout(dshAnimTimer)
     dshAnimTimer = null
@@ -883,12 +1007,14 @@ function restoreBubbleLines() {
   hintEl.style.color = ''
   render()
 }
-function showBubble() {
+function showBubble(skipBalance) {
   if (bubbleTimer) { clearTimeout(bubbleTimer); bubbleTimer = null }
   bubbleShown = true
   bubbleRandomActive = false
   restoreBubbleLines()
   bubbleBox.classList.add('dshwv-bubble-open')
+  // 余额提示：配一段对应当前余量的档位动画（单击弹出的气泡不播，留给点击回应）
+  if (!skipBalance) playDshBalance()
   // 默认展示当前内容；点击气泡切到随机台词段；总时长 5 秒自动关闭
   bubbleTimer = setTimeout(hideBubble, BUBBLE_MS)
 }
@@ -922,6 +1048,8 @@ function applyNotifyCfg(d) {
 }
 // 本小时起点与 Δ 累计：跨小时归零重算（重启后从当前值起算）
 var hourState = { hour: -1, prevDs: null, dsSpend: 0, prevBl: null, blSpend: 0, prevSx: null, sxSpend: 0 }
+// 百炼上次的剩余百分比：变了才播余额档位动画（用于「余额提示」判定）
+var lastBlRemaining = null
 var lastNotif = { dsLow: -1, dsHourly: -1, blLow: -1, blHourly: -1, sxLow: -1, sxHourly: -1 }
 function fmtV(v) { return String(Number(v)) }
 // 计算/判定通知条件；命中返回气泡行，未命中返回 false。
@@ -1005,6 +1133,7 @@ function showNotifBubble(lines) {
   bubbleRandomLines = null
   applyBubbleLines(lines)
   bubbleBox.classList.add('dshwv-bubble-open')
+  playDshBalance()
   bubbleTimer = setTimeout(hideBubble, BUBBLE_MS)
 }
 
@@ -1243,6 +1372,13 @@ function refresh(manual) {
           // 百炼不走余额滚动动画（金额语义不同），直接渲染订阅数据
           state.status = 'ok'
           render()
+          // 额度百分比变了才算一次「余额提示」，播对应档位的动画（首次加载不播）
+          var blNow = state.bailian && state.bailian.ok && state.bailian.remaining != null
+            ? parseFloat(String(state.bailian.remaining))
+            : null
+          if (blNow !== null && !isFinite(blNow)) blNow = null
+          if (blNow !== null && lastBlRemaining !== null && blNow !== lastBlRemaining) playDshBalance()
+          lastBlRemaining = blNow
         } else if (state.provider === 'suoxie' && !useSx) {
           // 展示供应商是梭子蟹但抓取失败（如 JWT 过期）：报它自己的错，别拿 DeepSeek 数字顶包
           state.status = 'error'
@@ -1828,10 +1964,12 @@ function endDrag(e, clickAllowed) {
   root.classList.remove('dshwv-dragging')
   setWidgetCursor(isWhaleHit(e) ? 'grab' : '')
   if (clickAllowed && !drag.moved) {
-    // 单击（位移 < 4px）：睡着先唤醒；挤压弹动由 pressDown/pressUp 表达
-    dshUserWake()
+    // 单击（位移 < 4px）：睡着先唤醒；挤压弹动由 pressDown/pressUp 表达，
+    // 视频外观再叠一段随机「点击回应」（刚醒的那一下留给醒来动作）
+    var woke = dshUserWake()
     cycleProvider()
-    showBubble()
+    showBubble(true)
+    if (!woke) playDshClick()
     return
   }
   var dx = e.screenX - drag.startScreenX
@@ -2026,21 +2164,28 @@ function loadAssets() {
     renderDsh()
     syncDshAmbient()
   }).catch(function () {})
-  // 视频外观：states 是状态映射，modes 是随机作息动作池（key = 文件名）。
+  // 视频外观：states 状态映射 / modes 随机作息池 / clicks 单击回应 / balance 余额档位
+  //（后三者都按文件名当 key，和随机动作共用一套 clip 表）。
   fetch('pet/manifest.json').then(function (r) { return r.json() }).then(function (m) {
     var clips = {}
     var states = m.states || {}
     Object.keys(states).forEach(function (k) {
-      clips[k] = { file: states[k].file, loop: states[k].loop !== false, walk: !!states[k].walk }
+      var s = states[k]
+      clips[k] = { file: s.file, loop: s.loop !== false, walk: !!s.walk, rate: s.rate || 1 }
     })
-    var modes = []
-    ;(m.modes || []).forEach(function (c) {
-      if (!c || !c.file) return
-      clips[c.file] = { file: c.file, loop: false, walk: !!c.walk }
-      modes.push(c.file)
-    })
+    function pick(list) {
+      var out = []
+      ;(list || []).forEach(function (c) {
+        if (!c || !c.file) return
+        clips[c.file] = { file: c.file, loop: false, walk: !!c.walk }
+        out.push(c.file)
+      })
+      return out
+    }
+    petModes = pick(m.modes)
+    petClicks = pick(m.clicks)
+    petBalance = pick(m.balance)
     petClips = clips
-    petModes = modes
     dshPlaying = ''
     renderDsh()
     syncDshAmbient()
