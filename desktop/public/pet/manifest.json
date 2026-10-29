@@ -15,10 +15,10 @@
       "label": "待机呼吸休闲"
     },
     "sleep": {
-      "file": "daiji-huxi-xiuxian.webm",
-      "loop": true,
-      "label": "待机呼吸休闲",
-      "rate": 0.7
+      "file": "yuandi-xiaoqi-chenmian.webm",
+      "loop": false,
+      "label": "原地小憩沉眠",
+      "stopFrame": 155
     },
     "think": {
       "file": "gongzuozhuangtai-sikao-maopao.webm",

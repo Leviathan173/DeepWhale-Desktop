@@ -647,17 +647,26 @@ function playDshClick() {
     renderDsh()
   }, DSH_CLICK_MS)
 }
-// 余额档位：0..5 按「已用百分比」分档（0 几乎没用 / 4 快见底 / 5 用满）。
-// 后端给的是 "80.8%" 这种带百分号的字符串（剩余额度）；金额型供应商（DeepSeek / 梭子蟹）
-// 没有分母，返回 -1 不播。
+// 余额档位：0..5（0 满溢 … 5 分文不剩），两种口径：
+// - 百炼：后端给 "80.8%" 这种带百分号的剩余额度字符串，按已用百分比分档（每 20% 一档）
+// - 金额型（DeepSeek / 梭子蟹）：每 25 元一档，≥125 元算满档
 function dshBalanceTier() {
-  if (state.provider !== 'bailian') return -1
-  var b = state.bailian
-  if (!b || !b.ok || b.remaining == null) return -1
-  var rem = parseFloat(String(b.remaining))
-  if (!isFinite(rem)) return -1
-  var used = Math.max(0, Math.min(100, 100 - rem))
-  return used >= 100 ? 5 : Math.floor(used / 20)
+  if (state.provider === 'bailian') {
+    var b = state.bailian
+    if (!b || !b.ok || b.remaining == null) return -1
+    var rem = parseFloat(String(b.remaining))
+    if (!isFinite(rem)) return -1
+    var used = Math.max(0, Math.min(100, 100 - rem))
+    return used >= 100 ? 5 : Math.floor(used / 20)
+  }
+  var bal = Number(state.balance)
+  if (state.balance == null || !isFinite(bal)) return -1
+  if (bal >= 125) return 0
+  if (bal >= 100) return 1
+  if (bal >= 75) return 2
+  if (bal >= 50) return 3
+  if (bal >= 25) return 4
+  return 5
 }
 function playDshBalance() {
   if (!dshPet || !petClips || !petBalance.length) return
@@ -709,6 +718,26 @@ function renderDshVideo(name) {
 // 换片段：新的一路先 play()，等它真的出帧（playing）再淡入、把旧的淡出暂停。
 // 同一文件（sleep 复用待机片段）不换元素，只改速率，避免重新解码。
 var dshSwapSeq = 0
+var DSH_FPS = 24 // 上游素材统一 24fps，manifest 的 stopFrame 按这个换算
+var dshFreezeTimer = null
+// 定格：睡姿片段播到第 stopFrame 帧就得停（再往后角色会站起来）。
+function dshFreezeAt(v, sec) {
+  clearInterval(dshFreezeTimer)
+  var started = false
+  dshFreezeTimer = setInterval(function () {
+    if (v !== DSH_VIDS[dshVidIdx]) { clearInterval(dshFreezeTimer); dshFreezeTimer = null; return }
+    if (v.currentTime > 0) started = true
+    if (started && v.paused) { clearInterval(dshFreezeTimer); dshFreezeTimer = null; return }
+    if (v.currentTime >= sec) {
+      v.pause()
+      clearInterval(dshFreezeTimer)
+      dshFreezeTimer = null
+    }
+  }, 40)
+}
+function dshStopSec(clip) {
+  return clip && clip.stopFrame ? clip.stopFrame / DSH_FPS : 0
+}
 function dshShowVideo(clip) {
   var cur = DSH_VIDS[dshVidIdx]
   if (dshVidFile === clip.file) {
@@ -717,11 +746,14 @@ function dshShowVideo(clip) {
     // 一次性片段（点击回应/余额档位/wake）重播时从头开始，别停在上一轮的尾帧
     if (!clip.loop) cur.currentTime = 0
     dshVideoPlay(cur)
+    if (dshStopSec(clip)) dshFreezeAt(cur, dshStopSec(clip))
     return
   }
   var next = DSH_VIDS[1 - dshVidIdx]
   next.loop = !!clip.loop
   next.playbackRate = clip.rate || 1
+  // 同一个元素上次就停在这一段时，重新从 0 播（否则会停在定格/尾帧上）
+  if (!clip.loop) next.currentTime = 0
   var src = 'pet/' + clip.file
   if (next.getAttribute('src') !== src) next.setAttribute('src', src)
   var seq = ++dshSwapSeq
@@ -737,6 +769,7 @@ function dshShowVideo(clip) {
     cur.pause()
     dshVidIdx = 1 - dshVidIdx
     dshVidFile = clip.file
+    if (dshStopSec(clip)) dshFreezeAt(next, dshStopSec(clip))
   }
   // 解码失败/卡住也要换过去，不然会一直显示上一段
   var fallback = setTimeout(swap, 600)
@@ -2171,7 +2204,7 @@ function loadAssets() {
     var states = m.states || {}
     Object.keys(states).forEach(function (k) {
       var s = states[k]
-      clips[k] = { file: s.file, loop: s.loop !== false, walk: !!s.walk, rate: s.rate || 1 }
+      clips[k] = { file: s.file, loop: s.loop !== false, walk: !!s.walk, rate: s.rate || 1, stopFrame: s.stopFrame || 0 }
     })
     function pick(list) {
       var out = []

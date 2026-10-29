@@ -34,8 +34,8 @@
      .dshwv-dsh-stage.dshwv-pet{width:calc(var(--dshw-base) * .96);height:calc(var(--dshw-base) * .76)}
      .dshwv-dsh-stage.dshwv-pet .dshwv-dsh-sprite{display:none}
      .dshwv-dsh-stage.dshwv-pet .dshwv-dsh-pulse{right:60%}
-     /* 视频外观的角色更高，气泡文字整体上移一点，别被头顶压住 */
-     .dshwv-root.dshwv-pet .dshwv-text{top:33%}
+     /* 视频外观的角色居中且更大，气泡整体缩到 78% 并贴在左上，让它落在角色左上方不被挡住 */
+     .dshwv-root.dshwv-pet .dshwv-bubble{transform:scale(.78);transform-origin:0 0}
      /* manifest 的 motion 字段：动效挂 stage（sprite 的 transform 留给走路朝向翻转）。 */
      .dshwv-dsh-stage[data-motion="tilt"]{animation:dshwv-tilt 1.2s ease-in-out infinite}
      .dshwv-dsh-stage[data-motion="wiggle"]{animation:dshwv-wiggle 1.2s ease-in-out infinite}
