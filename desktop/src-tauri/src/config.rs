@@ -159,7 +159,16 @@ fn default_provider() -> String {
 }
 
 fn default_appearance() -> String {
-    "dsh".to_string()
+    "pet".to_string()
+}
+
+/// 外观枚举归一：未知值一律回默认的 pet（dsh-pet 视频外观）。
+pub fn norm_appearance(a: &str) -> &'static str {
+    match a {
+        "classic" => "classic",
+        "dsh" => "dsh",
+        _ => "pet",
+    }
 }
 
 fn default_debug_port() -> u16 {
@@ -216,12 +225,7 @@ impl Default for AppConfig {
 impl AppConfig {
     fn normalized(mut self) -> Self {
         self.sound_set = sound_set(&self.sound_set).to_string();
-        self.appearance = if self.appearance == "classic" {
-            "classic"
-        } else {
-            "dsh"
-        }
-        .to_string();
+        self.appearance = norm_appearance(&self.appearance).to_string();
         self.usage_mode = normalize(&self.usage_mode).to_string();
         self.provider = norm_provider(&self.provider).to_string();
         if self.suoxie_welfare_model.trim().is_empty() {
@@ -278,12 +282,7 @@ pub fn write_prefs(
 /// 只改外观偏好（不碰音效/大小等其它挂件偏好）。
 pub fn write_appearance(dir: &Path, appearance: &str) {
     let mut cfg = read(dir);
-    cfg.appearance = if appearance == "classic" {
-        "classic"
-    } else {
-        "dsh"
-    }
-    .to_string();
+    cfg.appearance = norm_appearance(appearance).to_string();
     write_file(dir, &cfg.normalized());
 }
 
@@ -505,6 +504,26 @@ mod tests {
         write_dnd(&dir, false);
         assert!(!read(&dir).dnd);
 
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn appearance_normalized_to_three_values() {
+        for (input, want) in [
+            ("classic", "classic"),
+            ("dsh", "dsh"),
+            ("pet", "pet"),
+            ("", "pet"),
+            ("nonsense", "pet"),
+        ] {
+            assert_eq!(norm_appearance(input), want, "{input}");
+        }
+        let dir = tmp_dir("dshw-config-appearance-test");
+        assert_eq!(read(&dir).appearance, "pet", "缺省外观是 pet");
+        write_appearance(&dir, "classic");
+        assert_eq!(read(&dir).appearance, "classic");
+        write_appearance(&dir, "dsh");
+        assert_eq!(read(&dir).appearance, "dsh");
         let _ = fs::remove_dir_all(&dir);
     }
 }

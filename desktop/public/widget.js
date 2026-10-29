@@ -38,9 +38,19 @@ var dshStage = document.createElement('div')
 dshStage.className = 'dshwv-dsh-stage'
 var dshSprite = document.createElement('div')
 dshSprite.className = 'dshwv-dsh-sprite'
+// 视频外观（dsh-pet 素材）：一个状态一段 VP9-alpha webm，和精灵图互斥显示。
+var dshVideo = document.createElement('video')
+dshVideo.className = 'dshwv-dsh-video'
+dshVideo.muted = true
+dshVideo.playsInline = true
+dshVideo.preload = 'auto'
+dshVideo.setAttribute('muted', '')
+dshVideo.setAttribute('disablepictureinpicture', '')
+dshVideo.addEventListener('loadedmetadata', onDshVideoMeta)
 var dshPulse = document.createElement('div')
 dshPulse.className = 'dshwv-dsh-pulse'
 dshPulse.innerHTML = '<span class="dshwv-dsh-state"></span><span class="dshwv-dsh-detail"></span>'
+dshStage.appendChild(dshVideo)
 dshStage.appendChild(dshSprite)
 dshStage.appendChild(dshPulse)
 
@@ -128,7 +138,8 @@ usageSelect.appendChild(soundOpt('opencode', '小鲸鱼记账 (本地会话按�
 usageSelect.addEventListener('change', function () { setUsageMode(usageSelect.value) })
 var appearanceSelect = document.createElement('select')
 appearanceSelect.className = 'dshwv-sound'
-appearanceSelect.appendChild(soundOpt('dsh', '大肥鱼'))
+appearanceSelect.appendChild(soundOpt('pet', '大肥鱼'))
+appearanceSelect.appendChild(soundOpt('dsh', '大肥鱼·帧动画'))
 appearanceSelect.appendChild(soundOpt('classic', '余额鲸鱼'))
 appearanceSelect.addEventListener('change', function () { setAppearance(appearanceSelect.value, true) })
 var dndBox = document.createElement('input')
@@ -267,7 +278,7 @@ var state = {
   isPeak: false,
   status: 'loading',
   message: '',
-  appearance: 'dsh',
+  appearance: 'pet',
   dnd: false,
   provider: 'deepseek',
   hasBailian: false,
@@ -278,9 +289,13 @@ var state = {
   credentialRefresh: ''
 }
 var dshAppearance = true
+var dshPet = true
 var dshAnimTimer = null
 var dshFrame = 0
 var dshManifest = null
+var petClips = null
+var petModes = []
+var dshWalking = false
 var dshPlaying = ''
 var DSH_STATE_LABELS = { loading: '正在连接', changing: '余额变化', ok: '准备好了', error: '请求失败' }
 // 随机作息：平均 12 分钟一次（每小时 5 次），每次随机挑一个动作播完回 idle；
@@ -395,9 +410,10 @@ function playDsh(name, sc, frames) {
   }
   dshAnimTimer = setTimeout(step, mode === 'blink' ? 3000 + Math.random() * 6000 : frameMs)
 }
-// 作息在「大肥鱼 + manifest 已载入 + 未开勿扰 + 余额不报错」时运行。
+// 作息在「大肥鱼/视频外观 + manifest 已载入 + 未开勿扰 + 余额不报错」时运行。
 function dshAmbientWanted() {
-  return dshAppearance && dshManifest !== null && !dshDnd && state.status !== 'error'
+  if (!dshAppearance || dshDnd || state.status === 'error') return false
+  return dshPet ? petClips !== null : dshManifest !== null
 }
 function clearDshTimers() {
   clearTimeout(dshNextTimer); dshNextTimer = null
@@ -458,19 +474,21 @@ function fireDshMode() {
   }
   startDshMode()
 }
-function startDshMode() {
-  dshWakeTimer = null
-  dshWakeUntil = 0
-  if (!dshAmbientWanted()) {
-    renderDsh()
-    return
+// 随机动作池：视频外观用 manifest 的 modes（100 段），帧动画外观用 DSH_MODES。
+// 返回 { key, ms }；视频的 ms=0 表示「等 metadata 到了按片段真实时长挂表」。
+function dshPickMode() {
+  var key
+  if (dshPet && petModes.length) {
+    key = petModes[Math.floor(Math.random() * petModes.length)]
+    // 不连着重复同一个动作
+    if (key === dshLastMode) key = petModes[(petModes.indexOf(key) + 1) % petModes.length]
+    return { key: key, ms: 0 }
   }
   var pick = DSH_MODES[Math.floor(Math.random() * DSH_MODES.length)]
-  // 不连着重复同一个动作
   if (pick.state === dshLastMode) pick = DSH_MODES[(DSH_MODES.indexOf(pick) + 1) % DSH_MODES.length]
-  dshLastMode = pick.state
-  dshMode = pick.state
-  renderDsh()
+  return { key: pick.state, ms: pick.ms }
+}
+function armDshModeTimer(ms) {
   clearTimeout(dshModeTimer)
   dshModeTimer = setTimeout(function () {
     dshModeTimer = null
@@ -479,7 +497,27 @@ function startDshMode() {
     if (!dshAmbientWanted()) return
     armDshSleep()
     armDshNext()
-  }, pick.ms)
+  }, ms)
+}
+// 视频时长就是这次动作的时长（clip 3–12s），比写死 ms 更贴合。
+function onDshVideoMeta() {
+  if (!dshPet || !dshMode) return
+  var d = dshVideo.duration
+  if (!isFinite(d) || d <= 0) return
+  armDshModeTimer(Math.max(1500, Math.min(15000, d * 1000)))
+}
+function startDshMode() {
+  dshWakeTimer = null
+  dshWakeUntil = 0
+  if (!dshAmbientWanted()) {
+    renderDsh()
+    return
+  }
+  var pick = dshPickMode()
+  dshLastMode = pick.key
+  dshMode = pick.key
+  renderDsh()
+  armDshModeTimer(pick.ms || 10000)
 }
 // 点击唤醒：睡着时先播 wake 再回 idle，并把入睡计时重新挂上。返回是否真的唤醒了。
 function dshUserWake() {
@@ -496,21 +534,27 @@ function dshUserWake() {
   }, DSH_WAKE_MS)
   return true
 }
-// walk：真的平移 OS 窗口（45px/s），顶到屏幕左右沿就掉头；朝向用 sprite 的镜像表达。
+// walk：真的平移 OS 窗口（45px/s），顶到屏幕左右沿就掉头；朝向用镜像表达
+// （帧动画翻 sprite，视频外观翻 video，两者都由 dshFlip 统一处理）。
+function dshFlip(on) {
+  var t = on ? 'scaleX(-1)' : ''
+  dshSprite.style.transform = t
+  dshVideo.style.transform = t
+}
 function startDshWalk() {
   if (dshWalkRaf !== null) return
   dshWalkDir = Math.random() < 0.5 ? 1 : -1
-  dshSprite.style.transform = dshWalkDir > 0 ? 'scaleX(-1)' : ''
+  dshFlip(dshWalkDir > 0)
   dshWalkLast = 0
   dshWalkRaf = requestAnimationFrame(dshWalkStep)
 }
 function stopDshWalk() {
   if (dshWalkRaf !== null) cancelAnimationFrame(dshWalkRaf)
   dshWalkRaf = null
-  dshSprite.style.transform = ''
+  dshFlip(false)
 }
 function dshWalkStep(ts) {
-  if (dshPlaying !== 'walk' || !dshAmbientWanted()) { stopDshWalk(); return }
+  if (!dshWalking || !dshAmbientWanted()) { stopDshWalk(); return }
   var dt = Math.min(0.1, dshWalkLast ? (ts - dshWalkLast) / 1000 : 0)
   dshWalkLast = ts
   var w = winSize.w || viewport().w
@@ -518,7 +562,7 @@ function dshWalkStep(ts) {
   var next = state.left + dshWalkDir * 45 * dt
   if (next <= 0 || next >= max) {
     dshWalkDir = -dshWalkDir
-    dshSprite.style.transform = dshWalkDir > 0 ? 'scaleX(-1)' : ''
+    dshFlip(dshWalkDir > 0)
     next = clamp(next, 0, max)
   }
   state.left = next
@@ -546,31 +590,56 @@ function armDshError() {
     dshErrorTimer = null
   }
 }
+function dshPetClip(name) {
+  return petClips ? petClips[name] : null
+}
 function renderDsh() {
   if (!dshAppearance) return
   armDshError()
   var name = dshState()
-  var cfg = dshManifest && dshManifest.characters && dshManifest.characters['whale-girl']
-  var sc = (cfg && cfg.states && cfg.states[name]) || DSH_FALLBACK[name]
-  var frames = Math.max(1, sc.frames || 1)
   dshPulse.querySelector('.dshwv-dsh-state').textContent = DSH_STATE_LABELS[state.status] || state.status
   dshPulse.querySelector('.dshwv-dsh-detail').textContent = state.message || providerLabel()
   dshStage.classList.toggle('dshwv-dsh-error', name === 'error')
+  if (dshPet) renderDshVideo(name)
+  else renderDshSprite(name)
+  dshWalking = dshPet ? !!((dshPetClip(name) || {}).walk) : name === 'walk'
+  if (dshWalking) startDshWalk()
+  else stopDshWalk()
+}
+function renderDshSprite(name) {
+  dshVideo.pause()
   if (dshPlaying === name) return
   dshPlaying = name
+  var cfg = dshManifest && dshManifest.characters && dshManifest.characters['whale-girl']
+  var sc = (cfg && cfg.states && cfg.states[name]) || DSH_FALLBACK[name]
+  var frames = Math.max(1, sc.frames || 1)
   dshSprite.style.backgroundImage = 'url("' + dshAsset(name) + '")'
   dshSprite.style.backgroundSize = (frames * 100) + '% 100%'
   dshStage.dataset.motion = (sc && sc.motion) || ''
-  if (name === 'walk') startDshWalk()
-  else stopDshWalk()
   playDsh(name, sc, frames)
 }
+function renderDshVideo(name) {
+  var clip = dshPetClip(name)
+  if (!clip || dshPlaying === name) return
+  dshPlaying = name
+  dshStage.dataset.motion = '' // 视频自带动作，不再叠 CSS 动效
+  dshVideo.loop = !!clip.loop
+  var src = 'pet/' + clip.file
+  if (dshVideo.getAttribute('src') !== src) dshVideo.setAttribute('src', src)
+  var p = dshVideo.play()
+  if (p && p.catch) p.catch(function () {})
+}
 function setAppearance(v, persist) {
-  state.appearance = v === 'classic' ? 'classic' : 'dsh'
-  dshAppearance = state.appearance === 'dsh'
+  state.appearance = v === 'classic' ? 'classic' : v === 'dsh' ? 'dsh' : 'pet'
+  dshAppearance = state.appearance !== 'classic'
+  dshPet = state.appearance === 'pet'
   appearanceSelect.value = state.appearance
   root.classList.toggle('dshwv-classic', !dshAppearance)
   dshStage.hidden = !dshAppearance
+  dshStage.classList.toggle('dshwv-pet', dshPet)
+  dshVideo.pause()
+  // 两套素材的状态名不同（视频外观的随机动作 key 是文件名），切外观要重挑。
+  dshPlaying = ''
   if (!dshAppearance) {
     clearTimeout(dshAnimTimer)
     dshAnimTimer = null
@@ -578,7 +647,6 @@ function setAppearance(v, persist) {
     dshMode = ''
     dshWakeUntil = 0
     stopDshWalk()
-    dshPlaying = ''
   } else {
     // 大肥鱼模式不吸附屏幕边缘、不镜像：清掉经典外观留下的贴边/翻转状态。
     // 这里不 express()：改外观是在菜单里点的，窗口此刻是撑大的，移动会整窗跳一下；
@@ -1955,6 +2023,25 @@ function loadAssets() {
   fetch('dsh/manifest.json').then(function (r) { return r.json() }).then(function (manifest) {
     dshManifest = manifest
     dshPlaying = '' // 让已播状态按 manifest 的帧数/帧率重播一次
+    renderDsh()
+    syncDshAmbient()
+  }).catch(function () {})
+  // 视频外观：states 是状态映射，modes 是随机作息动作池（key = 文件名）。
+  fetch('pet/manifest.json').then(function (r) { return r.json() }).then(function (m) {
+    var clips = {}
+    var states = m.states || {}
+    Object.keys(states).forEach(function (k) {
+      clips[k] = { file: states[k].file, loop: states[k].loop !== false, walk: !!states[k].walk }
+    })
+    var modes = []
+    ;(m.modes || []).forEach(function (c) {
+      if (!c || !c.file) return
+      clips[c.file] = { file: c.file, loop: false, walk: !!c.walk }
+      modes.push(c.file)
+    })
+    petClips = clips
+    petModes = modes
+    dshPlaying = ''
     renderDsh()
     syncDshAmbient()
   }).catch(function () {})

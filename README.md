@@ -16,9 +16,9 @@
   - opencode 记账：读取 `opencode.sqlite` 会话历史
   - Claude Code 记账：读取 `~/.claude/projects/**` 的 jsonl 用量记录
   - 计价表：供应商/模型单价四段拆分（输入/输出/缓存读/缓存写）+ 峰谷两档（周末全天低谷价，2026-08-23 起）；未配置模型自动套内置官方价
-- 🎚️ **汉堡菜单**（悬停鲸鱼出现）：外观切换（大肥鱼 / 余额鲸鱼）、大小缩放、音效切换等
-- 🐳 **两套外观**：默认「大肥鱼」（鲸鱼娘精灵图），可一键切回原「余额鲸鱼」；素材离线内嵌，不依赖 DSH 服务
-- 🎞️ **15 个精灵全部启用**：`think / error` 映射真实状态，其余 10 个动作按随机作息播放（平均 12 分钟一次 ≈ 每小时 5 次，每次随机挑一个，沿用 manifest 的 loop / pingpong / once / blink 语义）；`walk` 会真的平移窗口，`drag` 在拖拽时出现；醒着待机 90 秒后入睡，点一下鲸鱼唤醒；菜单「勿扰」常睡；大肥鱼模式不吸附屏幕边缘、不镜像
+- 🎚️ **汉堡菜单**（悬停鲸鱼出现）：外观切换（大肥鱼 / 大肥鱼·帧动画 / 余额鲸鱼）、大小缩放、音效切换等
+- 🐳 **三套外观**：默认「大肥鱼」= [dsh-pet](https://github.com/PC2005-cloud/dsh-pet) 的 106 段透明视频（待机呼吸 / 螃蟹走路 / 被抓起悬空 / 小憩沉眠 / 惊醒 + 100 段随机动作，含吃火锅、玩魔方、放烟花…）；可切「大肥鱼·帧动画」（鲸鱼娘精灵图）或原「余额鲸鱼」。素材全部离线内嵌，不依赖 DSH 服务
+- 🎞️ **随机作息**：视频外观按片段真实时长播完一段（平均 12 分钟一次 ≈ 每小时 5 次，窗口最宽 15 秒），`think / error / drag / sleep / wake` 映射真实状态，三个走路动作会真的平移窗口；帧动画外观仍是 15 个精灵（`loop / pingpong / once / blink` 语义）。醒着待机 90 秒后入睡，点一下鲸鱼唤醒；菜单「勿扰」常睡；大肥鱼模式不吸附屏幕边缘、不镜像
 - 🔊 **音效**：按压/松手音效，三套可选（小黄鸭 / 音效1 / 鲸语，缺失时静默降级）
 - 💬 **随机台词**：点击气泡切换台词段，5 秒自动收起；**碎碎念同步语音配音**（百炼 qwen-audio-3.0-tts-plus 离线生成、内嵌播放）
 - 🧸 **按压 Q 弹**玩偶效果；左吸附水平镜像翻转
@@ -111,7 +111,8 @@ desktop/
 │   ├── widget.js            # 小鲸鱼交互（拖拽/吸附/气泡/供应商轮换）
 │   ├── settings.html        # 设置页
 │   ├── settings.js          # 设置页逻辑
-│   └── dsh/                 # 大肥鱼外观素材（第三方，见 dsh/NOTICE.md）
+│   └── pet/                 # 默认外观：dsh-pet 视频素材（第三方，见 pet/NOTICE.md）
+│                              # dsh/ 是「大肥鱼·帧动画」精灵图（第三方，见 dsh/NOTICE.md）
 └── src-tauri/
     ├── src/                 # Rust 后端
     │   ├── main.rs          # 窗口/托盘/命令注册
@@ -141,7 +142,9 @@ cargo run --bin tts_gen            # 幂等：已存在的 mp3 跳过；改文�
 
 ## 大肥鱼外观素材（第三方）
 
-`desktop/public/dsh/` 下的精灵图与 `manifest.json` 取自 [vlln/whale-girl](https://github.com/vlln/whale-girl)（MIT），角色设计署名 ZipZipPipe。许可与署名见 `desktop/public/dsh/NOTICE.md` 与同目录 `LICENSE`，发布包会一并携带。该外观默认启用，可在鲸鱼菜单「外观」切回原素材。
+默认外观「大肥鱼」用 `desktop/public/pet/` 下的 106 段 VP9-alpha 透明视频，取自 [PC2005-cloud/dsh-pet](https://github.com/PC2005-cloud/dsh-pet)（MIT，commit `2960493`），角色设计署名 ZipZipPipe、角色上游 [vlln/whale-girl](https://github.com/vlln/whale-girl)。文件按上游预览脚本的拼音表重命名，视频本身未转码；`manifest.json` 是我们的状态映射（`states` = 状态，`modes` = 随机动作池，`label` 保留上游中文动画名）。许可与署名见 `desktop/public/pet/NOTICE.md` 与同目录 `LICENSE`。
+
+「大肥鱼·帧动画」用 `desktop/public/dsh/` 下的精灵图与 `manifest.json`，取自 [vlln/whale-girl](https://github.com/vlln/whale-girl)（MIT），角色设计署名 ZipZipPipe。许可与署名见 `desktop/public/dsh/NOTICE.md` 与同目录 `LICENSE`，发布包会一并携带。两套外观都能在鲸鱼菜单「外观」里切，也能一键切回原素材。
 
 ## 验证
 

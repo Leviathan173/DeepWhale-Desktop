@@ -365,7 +365,7 @@ fn set_config(app: tauri::AppHandle, payload: Value) -> Result<Value, String> {
         .and_then(|v| v.as_f64())
         .unwrap_or(1.0)
         .clamp(1.0, 2.5);
-    let appearance = get("appearance").and_then(|v| v.as_str()).unwrap_or("dsh");
+    let appearance = get("appearance").and_then(|v| v.as_str()).unwrap_or("pet");
     let dnd = get("dnd").and_then(|v| v.as_bool()).unwrap_or(false);
     let sound = get("sound").and_then(|v| v.as_bool()).unwrap_or(true);
     let vol = get("vol")

@@ -26,6 +26,13 @@
      .dshwv-root.dshwv-top .dshwv-img{top:0}
      .dshwv-dsh-stage{position:absolute;right:calc(var(--dshw-base) * .04);bottom:calc(var(--dshw-base) * .03);width:calc(var(--dshw-base) * .62);height:calc(var(--dshw-base) * .62);pointer-events:none;z-index:2;filter:drop-shadow(0 8px 7px rgba(0,0,0,.36));transform-origin:50% 100%;transition:scale .22s cubic-bezier(.34,1.56,.64,1)}
      .dshwv-dsh-sprite{position:absolute;inset:0;background-repeat:no-repeat;background-position:0 0;background-size:100% 100%;image-rendering:auto}
+     /* 视频外观（dsh-pet）：640×360 的 VP9-alpha 片段。舞台加宽到 96%（角色像素大小仍由高度
+        决定，见下），cover 只裁掉左右各 6% 的空白，不再把风筝/动物环绕这类宽动作切掉。 */
+     .dshwv-dsh-video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;object-position:50% 100%;display:none;pointer-events:none;background:transparent}
+     .dshwv-dsh-stage.dshwv-pet{width:calc(var(--dshw-base) * .96)}
+     .dshwv-dsh-stage.dshwv-pet .dshwv-dsh-video{display:block}
+     .dshwv-dsh-stage.dshwv-pet .dshwv-dsh-sprite{display:none}
+     .dshwv-dsh-stage.dshwv-pet .dshwv-dsh-pulse{right:60%}
      /* manifest 的 motion 字段：动效挂 stage（sprite 的 transform 留给走路朝向翻转）。 */
      .dshwv-dsh-stage[data-motion="tilt"]{animation:dshwv-tilt 1.2s ease-in-out infinite}
      .dshwv-dsh-stage[data-motion="wiggle"]{animation:dshwv-wiggle 1.2s ease-in-out infinite}
