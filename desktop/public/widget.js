@@ -629,6 +629,16 @@ function armDshError() {
   if (state.status === 'error') {
     if (dshErrorArmed) return
     dshErrorArmed = true
+    // 报错优先：作废还在窗口里的点击回应/余额动画。
+    // 不然报错的 2.5s 窗口一过，点击回应（窗口是片段真实时长 ~10s）会回来把报错动画顶掉。
+    dshClickKey = ''
+    dshClickUntil = 0
+    clearTimeout(dshClickTimer)
+    dshClickTimer = null
+    dshBalanceKey = ''
+    dshBalanceUntil = 0
+    clearTimeout(dshBalanceTimer)
+    dshBalanceTimer = null
     dshErrorUntil = Date.now() + DSH_ERROR_MS
     clearTimeout(dshErrorTimer)
     dshErrorTimer = setTimeout(function () {
