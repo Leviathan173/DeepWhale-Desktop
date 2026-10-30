@@ -24,15 +24,25 @@ surrounding project.
 ## How the 960×540 set was built
 
 Sources: the `assets-videos` release (182MB) — `video/*.mp4`, 1280×720 H.264,
-green screen, with a `豆包AI生成` watermark in the bottom-right corner. The
-`assets-mov` release is 640×360 HEVC-alpha and offers no extra detail.
+green screen, with a `豆包AI生成` watermark. The `assets-mov` release is 640×360
+HEVC-alpha and offers no extra detail.
+
+The watermark is **not** fixed in one corner: in all 106 clips it sits bottom-right
+for ~0–3.8s, jumps to the top-left for ~4.0–7.8s, then returns to the bottom-right
+for ~8.0–10s (with ~0.2s fades). Both corners are empty of character, so both get a
+`delogo` on the decode side, each limited to its own time window:
+
+```
+delogo=x=1040:y=628:w=220:h=78:enable='between(t,0,4.0)+between(t,7.8,99)',
+delogo=x=20:y=28:w=226:h=78:enable='between(t,3.9,7.9)'
+```
 
 Per clip:
 
 1. `chroma_step02.py` from the upstream repo (HSV hue-based keying at 1280×720,
-   outputs VP9-alpha at CRF30), with `-vf delogo=x=1055:y=625:w=190:h=80` added on
-   the decode side to erase the watermark. The character never enters that corner,
-   so `delogo` is enough; no per-pixel fill step was needed.
+   outputs VP9-alpha at CRF30), with those two `delogo` filters added on the decode
+   side to erase the watermark. The character (centred, standing) never enters
+   either corner, so `delogo` is enough; no per-pixel fill step was needed.
 2. Normalization and the playback encode, using the same geometry as upstream's
    `normalize_step03.py` but at 540p: standing height 400px, feet at y=495.6,
    centered at x=480 on a 960×540 transparent canvas
@@ -49,5 +59,8 @@ Notes for anyone rebuilding this:
   itself and leaves only edge fringes. Use upstream's HSV keying (or `colorkey`).
 - Upstream's `video/碎碎念-*.mp4` files are actually named `岁岁念-*.mp4` in the
   archive (typo). Rename them before mapping pinyin names.
-- Resulting size: ~105MB for 106 clips (vs 51.8MB for the 640×360 set), which is
-  why the app is ~120MB instead of ~70MB.
+- When checking the result, sample at least one frame from each watermark window
+  (e.g. t=2 and t=6) — a single frame at t=4 shows a clean corner and hides the
+  top-left pass entirely.
+- Resulting size: ~104MB for 106 clips (vs 51.8MB for the 640×360 set), which is
+  why the app is ~117MB instead of ~70MB.
