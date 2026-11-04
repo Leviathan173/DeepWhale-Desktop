@@ -163,12 +163,17 @@ dndBox.type = 'checkbox'
 dndBox.className = 'dshwv-check'
 dndBox.title = '勿扰：大肥鱼保持睡觉，不自动活动'
 dndBox.addEventListener('change', function () { setDnd(dndBox.checked, true) })
-// 启用的供应商列表（按此顺序点击鲸鱼轮换）：deepseek 恒有，百炼/梭子蟹有凭据才加入。
+// 启用的供应商列表（按此顺序点击鲸鱼轮换）：deepseek 恒有，百炼/梭子蟹有凭据才加入；
+// 再按设置页「点击展示的提供商」过滤（空列表按后端归一后的默认全选处理）。
 function providerList() {
   var list = ['deepseek']
   if (state.hasBailian) list.push('bailian')
   if (state.hasSuoxie) list.push('suoxie')
-  return list
+  var on = state.bubbleProviders
+  if (Array.isArray(on) && on.length) {
+    list = list.filter(function (p) { return on.indexOf(p) >= 0 })
+  }
+  return list.length ? list : ['deepseek']
 }
 function normalizeProvider() {
   var list = providerList()
@@ -297,6 +302,7 @@ var state = {
   appearance: 'pet',
   dnd: false,
   provider: 'deepseek',
+  bubbleProviders: null,
   hasBailian: false,
   bailian: null,
   hasSuoxie: false,
@@ -2145,6 +2151,9 @@ function applyConfig(d) {
   if (d && typeof d.provider === 'string') {
     state.provider = d.provider
   }
+  if (d && Array.isArray(d.bubbleProviders)) {
+    state.bubbleProviders = d.bubbleProviders
+  }
   applyNotifyCfg(d)
   normalizeProvider()
   render()
@@ -2160,6 +2169,8 @@ function bootWidget() {
         // 先重载配置（保存通知阈值/凭据后免重启生效），再刷新余额，避免竞态用旧阈值判通知
         apiGetConfig().then(function (d) {
           if (d && typeof d.provider === 'string') state.provider = d.provider
+          if (d && Array.isArray(d.bubbleProviders)) state.bubbleProviders = d.bubbleProviders
+          normalizeProvider()
           applyNotifyCfg(d)
           refresh(true)
         }).catch(function () {

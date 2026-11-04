@@ -213,12 +213,50 @@
   if (dbgAttachEl) dbgAttachEl.addEventListener('change', saveDebugPrefs)
   if (dbgPortEl) dbgPortEl.addEventListener('change', saveDebugPrefs)
 
+  // ---- 点击鲸鱼时展示哪些提供商的气泡 ----
+  var bubbleEls = {
+    deepseek: document.getElementById('bp-deepseek'),
+    bailian: document.getElementById('bp-bailian'),
+    suoxie: document.getElementById('bp-suoxie')
+  }
+  var bubbleStatus = document.getElementById('bubblestatus')
+  var bubbleBtn = document.getElementById('savebubble')
+  var bubbleSeq = 0
+  function bubbleMsg(t, err) {
+    var seq = ++bubbleSeq
+    if (!bubbleStatus) return
+    bubbleStatus.style.color = err ? '#e0433f' : '#2fa24c'
+    bubbleStatus.textContent = t
+    setTimeout(function () { if (seq === bubbleSeq) bubbleStatus.textContent = '' }, 2500)
+  }
+  if (bubbleBtn) {
+    bubbleBtn.addEventListener('click', function () {
+      var list = Object.keys(bubbleEls).filter(function (k) {
+        return bubbleEls[k] && bubbleEls[k].checked
+      })
+      if (!list.length) {
+        bubbleMsg('至少勾选一个供应商', true)
+        return
+      }
+      bubbleMsg('正在保存…')
+      TAPI.invoke('set_bubble_providers', { providers: list }).then(function () {
+        bubbleMsg('展示列表已保存')
+        refreshBalance()
+      }).catch(function () { bubbleMsg('保存失败', true) })
+    })
+  }
+
   TAPI.invoke('get_config')
     .then(function (cfg) {
       if (!cfg) return
       fillNotify(cfg)
       if (dbgAttachEl) dbgAttachEl.checked = !!cfg.debugAttach
       if (dbgPortEl) dbgPortEl.value = cfg.debugPort || 9222
+      if (Array.isArray(cfg.bubbleProviders)) {
+        Object.keys(bubbleEls).forEach(function (k) {
+          if (bubbleEls[k]) bubbleEls[k].checked = cfg.bubbleProviders.indexOf(k) >= 0
+        })
+      }
       wfApplyCfg(cfg)
     })
     .catch(function () {})
@@ -590,6 +628,7 @@
     link('百炼令牌套餐', 'sec-bailian', true)
     link('梭子蟹中转站', 'sec-suoxie', true)
     link('余额/花费通知', 'sec-notify')
+    link('点击展示提供商', 'sec-bubble')
     link('用量计价', 'sec-pricing')
     link('关于与更新', 'sec-update')
     var boxCount = pricingBox.querySelectorAll('.prov').length

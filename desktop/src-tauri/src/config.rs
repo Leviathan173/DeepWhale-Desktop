@@ -130,6 +130,9 @@ pub struct AppConfig {
     /// 小鲸鱼当前展示的供应商（deepseek/bailian/suoxie）。
     #[serde(default = "default_provider")]
     pub provider: String,
+    /// 点击鲸鱼时参与气泡轮换的供应商（deepseek/bailian/suoxie）。
+    #[serde(default = "default_bubble_providers")]
+    pub bubble_providers: Vec<String>,
     /// 通知阈值。None/≤0 = 关闭该项通知。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ds_hourly_limit: Option<f64>,
@@ -156,6 +159,27 @@ fn positive_pct(v: Option<f64>) -> Option<f64> {
 
 fn default_provider() -> String {
     "deepseek".to_string()
+}
+
+fn default_bubble_providers() -> Vec<String> {
+    ["deepseek", "bailian", "suoxie"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
+}
+
+/// 归一为固定顺序的已知供应商；空白/未知值丢弃，全空回落到默认全选。
+fn norm_bubble_providers(list: &[String]) -> Vec<String> {
+    let out: Vec<String> = ["deepseek", "bailian", "suoxie"]
+        .iter()
+        .filter(|p| list.iter().any(|x| x == *p))
+        .map(|p| p.to_string())
+        .collect();
+    if out.is_empty() {
+        default_bubble_providers()
+    } else {
+        out
+    }
 }
 
 fn default_appearance() -> String {
@@ -212,6 +236,7 @@ impl Default for AppConfig {
             opencode_db: None,
             usage_providers: None,
             provider: default_provider(),
+            bubble_providers: default_bubble_providers(),
             ds_hourly_limit: None,
             ds_min_balance: None,
             bl_hourly_pct: None,
@@ -228,6 +253,7 @@ impl AppConfig {
         self.appearance = norm_appearance(&self.appearance).to_string();
         self.usage_mode = normalize(&self.usage_mode).to_string();
         self.provider = norm_provider(&self.provider).to_string();
+        self.bubble_providers = norm_bubble_providers(&self.bubble_providers);
         if self.suoxie_welfare_model.trim().is_empty() {
             self.suoxie_welfare_model = default_welfare_model();
         }
@@ -383,6 +409,13 @@ pub fn write_provider(dir: &Path, provider: &str) {
     write_file(dir, &cfg.normalized());
 }
 
+/// 只改点击轮换的供应商列表。
+pub fn write_bubble_providers(dir: &Path, providers: &[String]) {
+    let mut cfg = read(dir);
+    cfg.bubble_providers = norm_bubble_providers(providers);
+    write_file(dir, &cfg.normalized());
+}
+
 /// 只改通知阈值。None/≤0 → 关闭该项通知（不改其他配置）。
 pub fn write_notify_prefs(
     dir: &Path,
@@ -488,6 +521,30 @@ mod tests {
         assert_eq!(c.debug_port, 1234);
         assert_eq!(norm_provider("suoxie"), "suoxie");
         assert_eq!(norm_provider("x"), "deepseek");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn bubble_providers_normalized_and_persisted() {
+        let dir = tmp_dir("dshw-config-bubble-test");
+        assert_eq!(
+            read(&dir).bubble_providers,
+            vec!["deepseek", "bailian", "suoxie"],
+            "缺省全选"
+        );
+        write_bubble_providers(&dir, &["suoxie".into(), "bogus".into()]);
+        assert_eq!(read(&dir).bubble_providers, vec!["suoxie"]);
+        // 固定顺序 + 去重
+        write_bubble_providers(&dir, &["suoxie".into(), "deepseek".into(), "suoxie".into()]);
+        assert_eq!(read(&dir).bubble_providers, vec!["deepseek", "suoxie"]);
+        // 全是未知值 → 回默认全选
+        write_bubble_providers(&dir, &["bogus".into()]);
+        assert_eq!(
+            read(&dir).bubble_providers,
+            vec!["deepseek", "bailian", "suoxie"]
+        );
+        // 不碰其它配置
+        assert_eq!(read(&dir).provider, "deepseek");
         let _ = fs::remove_dir_all(&dir);
     }
 

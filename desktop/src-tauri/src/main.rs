@@ -81,6 +81,7 @@ fn main() {
             cursor_pos,
             popup_app_menu,
             set_notify_prefs,
+            set_bubble_providers,
             set_debug_prefs,
             app_version,
             restart_app,
@@ -340,6 +341,7 @@ fn get_config(app: tauri::AppHandle) -> Value {
         "usageMode": cfg.usage_mode,
         "hasApiKey": cfg.api_key.is_some(),
         "provider": cfg.provider,
+        "bubbleProviders": cfg.bubble_providers,
         "hasBailian": cfg.bailian_cookie.is_some() && cfg.bailian_post_data.is_some(),
         "hasSuoxie": cfg.suoxie_token.is_some(),
         "hasSuoxieApiKey": cfg.suoxie_api_key.is_some(),
@@ -386,6 +388,15 @@ fn set_config(app: tauri::AppHandle, payload: Value) -> Result<Value, String> {
     config::write_dnd(dir, dnd);
     config::write_provider(dir, provider);
     Ok(json!({ "ok": true }))
+}
+
+/// 设置点击鲸鱼时参与气泡轮换的供应商列表。
+#[tauri::command]
+fn set_bubble_providers(app: tauri::AppHandle, providers: Vec<String>) -> Value {
+    let st = app.state::<AppState>();
+    let _g = st.cfg.lock().unwrap_or_else(|e| e.into_inner());
+    config::write_bubble_providers(&st.dir, &providers);
+    json!({ "ok": true })
 }
 
 /// 设置通知阈值（None/≤0 → 关闭该项通知）。
