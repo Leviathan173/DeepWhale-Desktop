@@ -171,7 +171,7 @@ fn build_app_menu(handle: &tauri::AppHandle, prefix: &str) -> tauri::Result<Menu
     let settings = MenuItem::with_id(
         handle,
         format!("{prefix}settings"),
-        "设置 API Key",
+        "设置",
         true,
         None::<&str>,
     )?;
