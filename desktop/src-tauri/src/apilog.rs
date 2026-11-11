@@ -49,6 +49,15 @@ pub async fn send(tag: &str, req: reqwest::RequestBuilder) -> Result<(u16, Strin
     }
 }
 
+/// 记一行「决策」日志（不涉及请求本身），用于事后判断凭据到底被谁判成了失效。
+pub fn note(tag: &str, msg: &str) {
+    append(&format!(
+        "{} [{tag}] {}\n",
+        stamp(),
+        flat(msg, SNIPPET_CHARS)
+    ));
+}
+
 /// reqwest 的 Display 只有「error sending request for url」，真正原因在 source 链里
 /// （connect timeout / connection closed before message completed / dns 等）。
 fn err_chain(e: &reqwest::Error) -> String {

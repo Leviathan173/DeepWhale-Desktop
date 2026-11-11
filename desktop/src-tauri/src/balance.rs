@@ -111,6 +111,15 @@ async fn fetch_today_usage(client: &reqwest::Client, platform_token: &str) -> Re
         return Err(format!("http {status}"));
     }
     let data: Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+    // 平台令牌失效时回的是 HTTP 200 + 业务码（实测 code=40003
+    // "Authorization Failed (invalid token)"），并不会给 401。不识别就会静默回退
+    // 本地记账，后台自动续期永远不触发——这是 DeepSeek 侧最隐蔽的一条漏网路径。
+    if let Some(code) = data.get("code").and_then(|v| v.as_i64()) {
+        if code != 0 {
+            let msg = data.get("msg").and_then(|v| v.as_str()).unwrap_or("");
+            return Err(format!("platform code {code}: {msg}"));
+        }
+    }
     pricing::compute_today_usage(&data)
         .map(|(cost, _)| cost)
         .ok_or_else(|| "no usage".to_string())
@@ -274,6 +283,13 @@ async fn fetch_suoxie(client: &reqwest::Client, token: &str) -> Result<Value, St
         return Err(format!("HTTP {status}"));
     }
     let me: Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+    // 梭子蟹也存在「HTTP 200 + 业务 code」的失败形态（与 DeepSeek 平台一致），
+    // 只看状态码会把 TOKEN_EXPIRED 当成结构异常，既不提示也不触发续期。
+    if body_code_ok(&me) == Some(false) {
+        let code = me.get("code").cloned().unwrap_or(Value::Null);
+        let msg = me.get("message").and_then(|v| v.as_str()).unwrap_or("");
+        return Err(format!("suoxie code {code}: {msg}"));
+    }
     let balance = me
         .pointer("/data/balance")
         .and_then(num_or_str)
@@ -295,6 +311,11 @@ async fn fetch_suoxie(client: &reqwest::Client, token: &str) -> Result<Value, St
             return Err(format!("HTTP {status}"));
         }
         let body: Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+        if body_code_ok(&body) == Some(false) {
+            let code = body.get("code").cloned().unwrap_or(Value::Null);
+            let msg = body.get("message").and_then(|v| v.as_str()).unwrap_or("");
+            return Err(format!("suoxie code {code}: {msg}"));
+        }
         if let Some(items) = body.pointer("/data/items").and_then(|v| v.as_array()) {
             spend += page_cost(items);
         }
@@ -317,6 +338,166 @@ async fn fetch_suoxie(client: &reqwest::Client, token: &str) -> Result<Value, St
         "currency": "CNY",
         "todayUsage": spend,
     }))
+}
+
+/// 平台用量接口的登录态失效：HTTP 401/403，或 HTTP 200 + 业务码（实测 40003
+/// 「Authorization Failed (invalid token)」）。后者最容易漏——漏了就永远不续期。
+fn platform_auth_error(e: &str) -> bool {
+    let l = e.to_ascii_lowercase();
+    l.contains("http 401")
+        || l.contains("http 403")
+        || l.contains("40003")
+        || l.contains("authorization failed")
+        || l.contains("invalid token")
+}
+
+/// 业务码是否成功：`0` 或 `"0"` 算成功；返回 None 表示响应里没有 code 字段。
+fn body_code_ok(body: &Value) -> Option<bool> {
+    let c = body.get("code")?;
+    Some(c.as_i64() == Some(0) || c.as_str().map(|s| s.trim() == "0").unwrap_or(false))
+}
+
+/// 梭子蟹登录态失效判断：错误串大小写不统一（fetch_suoxie 抛 "HTTP 401"，
+/// 平台用量抛 "http 401"），统一转小写再比，别让一个大小写 bug 把自动续期关掉。
+fn suoxie_auth_error(e: &str) -> bool {
+    let l = e.to_ascii_lowercase();
+    l.contains("http 401")
+        || l.contains("http 403")
+        || l.contains("code 401")
+        || l.contains("code 403")
+        || l.contains("code \"401\"")
+        || l.contains("code \"403\"")
+        || l.contains("token_expired")
+        || l.contains("invalid_token")
+        || l.contains("invalid token")
+        || l.contains("unauthorized")
+        || l.contains("token has expired")
+}
+
+/// 「当前保存的凭据还能不能用」的结论。Unknown 表示网络/接口异常——既不能
+/// 宣称有效，也绝不能当成失效去拉浏览器。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CredentialState {
+    Valid,
+    Invalid,
+    Unknown,
+}
+
+impl CredentialState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CredentialState::Valid => "valid",
+            CredentialState::Invalid => "invalid",
+            CredentialState::Unknown => "unknown",
+        }
+    }
+}
+
+/// 用真实接口判断已保存凭据的死活——不靠本地猜 JWT，也不靠「这次没抓到新凭据」。
+/// 返回 (结论, 可读原因)。
+pub async fn probe_credential(state: &AppState, provider: &str) -> (CredentialState, String) {
+    let cfg = {
+        let _g = state.cfg.lock().unwrap_or_else(|e| e.into_inner());
+        config::read(&state.dir)
+    };
+    match provider {
+        "suoxie" => match cfg.suoxie_token.as_deref() {
+            Some(token) => probe_suoxie(&state.client, token).await,
+            None => (CredentialState::Invalid, "未保存梭子蟹 token".to_string()),
+        },
+        "bailian" => match (
+            cfg.bailian_cookie.as_deref(),
+            cfg.bailian_post_data.as_deref(),
+        ) {
+            (Some(cookie), Some(post)) => {
+                match fetch_bailian_subscription(&state.client, cookie, post).await {
+                    Ok(body) => {
+                        let parsed = parse_bailian_subscription(&body);
+                        if parsed["ok"].as_bool() == Some(true) {
+                            (CredentialState::Valid, "百炼订阅接口正常".to_string())
+                        } else {
+                            let msg = parsed["error"].as_str().unwrap_or("接口异常").to_string();
+                            if parsed["credentialExpired"].as_bool() == Some(true) {
+                                (CredentialState::Invalid, msg)
+                            } else {
+                                (CredentialState::Unknown, msg)
+                            }
+                        }
+                    }
+                    Err(e) => (CredentialState::Unknown, e),
+                }
+            }
+            _ => (CredentialState::Invalid, "未保存百炼凭据".to_string()),
+        },
+        _ => {
+            // 只有「实时·令牌」模式才需要平台令牌；本地记账模式下它不参与任何展示，
+            // 不能因为它过期就弹「凭据失效」。
+            if config::normalize(&cfg.usage_mode) != "token" {
+                return (
+                    CredentialState::Valid,
+                    "当前不是令牌用量模式，平台令牌未参与取数".to_string(),
+                );
+            }
+            match cfg.platform_token.as_deref() {
+                Some(token) => match fetch_today_usage(&state.client, token).await {
+                    Ok(_) => (CredentialState::Valid, "平台用量接口正常".to_string()),
+                    Err(e) if platform_auth_error(&e) => (CredentialState::Invalid, e),
+                    Err(e) => (CredentialState::Unknown, e),
+                },
+                None => (
+                    CredentialState::Invalid,
+                    "未保存 DeepSeek 平台令牌".to_string(),
+                ),
+            }
+        }
+    }
+}
+
+/// 只打 auth/me：最轻量、且正是余额用的那条接口，不会像分页用量那样慢。
+async fn probe_suoxie(client: &reqwest::Client, token: &str) -> (CredentialState, String) {
+    let auth = format!("Bearer {}", token.trim_start_matches("Bearer ").trim());
+    let (status, text) = match apilog::send(
+        "suoxie-probe",
+        suoxie_headers(
+            client.get(format!(
+                "{SUOXIE_BASE}/api/v1/auth/me?timezone=Asia%2FShanghai"
+            )),
+            &auth,
+        )
+        .timeout(SUOXIE_TIMEOUT),
+    )
+    .await
+    {
+        Ok(v) => v,
+        Err(e) => return (CredentialState::Unknown, e),
+    };
+    if status == 401 || status == 403 {
+        return (CredentialState::Invalid, format!("HTTP {status}"));
+    }
+    if !(200..300).contains(&status) {
+        return (CredentialState::Unknown, format!("HTTP {status}"));
+    }
+    let body: Value = match serde_json::from_str(&text) {
+        Ok(v) => v,
+        Err(e) => return (CredentialState::Unknown, format!("响应非 JSON: {e}")),
+    };
+    if body_code_ok(&body) == Some(false) {
+        let code = body.get("code").cloned().unwrap_or(Value::Null);
+        let msg = body.get("message").and_then(|v| v.as_str()).unwrap_or("");
+        let text = format!("suoxie code {code}: {msg}");
+        return if suoxie_auth_error(&text) {
+            (CredentialState::Invalid, text)
+        } else {
+            (CredentialState::Unknown, text)
+        };
+    }
+    if body.pointer("/data/balance").and_then(num_or_str).is_none() {
+        return (
+            CredentialState::Invalid,
+            "auth/me 未返回余额，登录态不可用".to_string(),
+        );
+    }
+    (CredentialState::Valid, "梭子蟹登录态正常".to_string())
 }
 
 /// 组装完整 payload（记账/令牌双模式 + 峰谷标记 + 落缓存）。
@@ -428,7 +609,7 @@ pub async fn get_balance_payload(state: &AppState) -> Value {
                 }
                 Err(e) => {
                     eprintln!("[balance] 令牌用量抓取失败，回退小鲸鱼记账: {e}");
-                    usage_credential_expired = e.contains("http 401") || e.contains("http 403");
+                    usage_credential_expired = platform_auth_error(&e);
                     false
                 }
             },
@@ -453,15 +634,38 @@ pub async fn get_balance_payload(state: &AppState) -> Value {
     // 百炼 TokenPlan（订阅制）与梭子蟹（中转站），收并发任务的尾。
     payload["bailian"] = join_side(bailian_task.take()).await;
     payload["suoxie"] = join_side(suoxie_task.take()).await;
-    let credential_refresh_needed = match cfg.provider.as_str() {
-        "deepseek" => usage_credential_expired,
-        "bailian" => payload["bailian"]["credentialExpired"].as_bool() == Some(true),
-        "suoxie" => payload["suoxie"]["error"]
-            .as_str()
-            .is_some_and(|e| e.contains("http 401") || e.contains("http 403")),
-        _ => false,
+    let (credential_refresh_needed, credential_scope) = match cfg.provider.as_str() {
+        // DeepSeek 余额靠 api_key，平台令牌只影响「实时用量」。把两者混成一句
+        // 「凭据失效」正是误报的来源，所以这里单独标成 usage。
+        "deepseek" => (usage_credential_expired, "usage"),
+        "bailian" => (
+            payload["bailian"]["credentialExpired"].as_bool() == Some(true),
+            "login",
+        ),
+        "suoxie" => (
+            payload["suoxie"]["error"]
+                .as_str()
+                .is_some_and(suoxie_auth_error),
+            "login",
+        ),
+        _ => (false, "login"),
     };
     payload["credentialRefreshNeeded"] = json!(credential_refresh_needed);
+    payload["credentialRefreshScope"] = json!(credential_scope);
+    if credential_refresh_needed {
+        apilog::note(
+            "credential",
+            &format!(
+                "provider={} scope={} 判定需要更新：{}",
+                cfg.provider,
+                credential_scope,
+                payload["suoxie"]["error"]
+                    .as_str()
+                    .or_else(|| payload["bailian"]["error"].as_str())
+                    .unwrap_or("平台用量令牌失效")
+            ),
+        );
+    }
 
     *state.cache.lock().unwrap() = Some(BalanceCache {
         at: std::time::Instant::now(),
@@ -485,7 +689,9 @@ mod tests {
                 payload: json!({"ok": true}),
             })),
             busy: tokio::sync::Mutex::new(()),
-            credential_retry: std::sync::atomic::AtomicBool::new(false),
+            credential_retry_at: std::sync::Mutex::new(None),
+            credential_needs_user: std::sync::atomic::AtomicBool::new(false),
+            credential_busy: std::sync::atomic::AtomicBool::new(false),
             cfg: std::sync::Mutex::new(()),
             check_update: std::sync::atomic::AtomicBool::new(false),
         };
@@ -498,11 +704,49 @@ mod tests {
                 payload: json!({"ok": true}),
             })),
             busy: tokio::sync::Mutex::new(()),
-            credential_retry: std::sync::atomic::AtomicBool::new(false),
+            credential_retry_at: std::sync::Mutex::new(None),
+            credential_needs_user: std::sync::atomic::AtomicBool::new(false),
+            credential_busy: std::sync::atomic::AtomicBool::new(false),
             cfg: std::sync::Mutex::new(()),
             check_update: std::sync::atomic::AtomicBool::new(false),
         };
         assert!(cached_payload(&expired).is_none());
+    }
+
+    #[test]
+    fn platform_auth_error_detects_body_level_401() {
+        // 实测：无效平台令牌 → HTTP 200 + {"code":40003,"msg":"Authorization Failed (invalid token)"}
+        assert!(platform_auth_error(
+            "platform code 40003: Authorization Failed (invalid token)"
+        ));
+        assert!(platform_auth_error("http 401"));
+        assert!(platform_auth_error("HTTP 403"));
+        assert!(!platform_auth_error("no usage"));
+        assert!(!platform_auth_error("platform code 50000: internal error"));
+        assert!(!platform_auth_error("余额接口请求失败: 超时"));
+    }
+
+    #[test]
+    fn suoxie_auth_error_is_case_insensitive() {
+        assert!(suoxie_auth_error("接口请求失败: HTTP 401"));
+        assert!(suoxie_auth_error("接口请求失败: http 401"));
+        assert!(suoxie_auth_error("HTTP 403"));
+        assert!(suoxie_auth_error("TOKEN_EXPIRED"));
+        assert!(suoxie_auth_error(
+            "suoxie code \"TOKEN_EXPIRED\": Token has expired"
+        ));
+        assert!(suoxie_auth_error("suoxie code 401: unauthorized"));
+        assert!(!suoxie_auth_error("梭子蟹接口超时"));
+        assert!(!suoxie_auth_error("接口请求失败: HTTP 500"));
+    }
+
+    #[test]
+    fn body_code_ok_handles_numbers_and_strings() {
+        assert_eq!(body_code_ok(&json!({"code": 0})), Some(true));
+        assert_eq!(body_code_ok(&json!({"code": "0"})), Some(true));
+        assert_eq!(body_code_ok(&json!({"code": 40003})), Some(false));
+        assert_eq!(body_code_ok(&json!({"code": "TOKEN_EXPIRED"})), Some(false));
+        assert_eq!(body_code_ok(&json!({"data": {}})), None);
     }
 
     #[test]

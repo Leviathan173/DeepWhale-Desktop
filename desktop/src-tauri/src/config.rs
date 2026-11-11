@@ -104,6 +104,10 @@ pub struct AppConfig {
     /// 梭子蟹中转站（suoxie.codes）登录 JWT（Bearer，约 24h 过期需重抓）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub suoxie_token: Option<String>,
+    /// 梭子蟹刷新令牌（长效，JWT 到期前用它静默换新，不必开浏览器）。
+    /// 等同密码级敏感，只在本地 config.json。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suoxie_refresh_token: Option<String>,
     /// 梭子蟹中转站 API Key（sk-，签到前凑「当日一次成功调用」用）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub suoxie_api_key: Option<String>,
@@ -227,6 +231,7 @@ impl Default for AppConfig {
             bailian_cookie: None,
             bailian_post_data: None,
             suoxie_token: None,
+            suoxie_refresh_token: None,
             suoxie_api_key: None,
             suoxie_welfare: true,
             suoxie_welfare_model: default_welfare_model(),
@@ -266,9 +271,11 @@ fn file(dir: &Path) -> std::path::PathBuf {
 }
 
 pub fn read(dir: &Path) -> AppConfig {
-    let cfg: AppConfig = fs::read(dir.join("config.json"))
-        .ok()
-        .and_then(|s| serde_json::from_slice::<AppConfig>(&s).ok())
+    let raw = fs::read(dir.join("config.json")).unwrap_or_default();
+    // 兼容记事本/PowerShell 写出的 UTF-8 BOM：serde_json 不认 BOM，
+    // 否则整份配置会静默回落到默认值（凭据全丢）。
+    let bytes = raw.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(&raw);
+    let cfg: AppConfig = serde_json::from_slice::<AppConfig>(bytes)
         .unwrap_or_default()
         .normalized();
     cfg
@@ -343,10 +350,19 @@ pub fn write_bailian_credentials(dir: &Path, cookie: Option<String>, post_data: 
     write_file(dir, &cfg);
 }
 
-/// 只改梭子蟹 token。
+/// 只改梭子蟹 token（不动 refresh_token）。
 pub fn write_suoxie_token(dir: &Path, token: Option<String>) {
     let mut cfg = read(dir);
     cfg.suoxie_token = token
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    write_file(dir, &cfg);
+}
+
+/// 只改梭子蟹 refresh_token（None → 清空，比如 JWT 被手动清掉时）。
+pub fn write_suoxie_refresh_token(dir: &Path, refresh_token: Option<String>) {
+    let mut cfg = read(dir);
+    cfg.suoxie_refresh_token = refresh_token
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
     write_file(dir, &cfg);
@@ -448,6 +464,21 @@ mod tests {
     }
 
     #[test]
+    fn read_tolerates_utf8_bom() {
+        // 记事本 / PowerShell 5 写出的 JSON 带 BOM，解析失败会静默丢全部凭据
+        let dir = tmp_dir("dshw-config-bom-test");
+        let body = r#"{"scale":1.3,"sound":true,"vol":0.5,"sound_set":"duck","usage_mode":"token","api_key":"sk-x","suoxie_token":"jwt.y.z"}"#;
+        let mut bytes = vec![0xEF, 0xBB, 0xBF];
+        bytes.extend_from_slice(body.as_bytes());
+        fs::write(dir.join("config.json"), bytes).unwrap();
+        let c = read(&dir);
+        assert_eq!(c.scale, 1.3);
+        assert_eq!(c.api_key.as_deref(), Some("sk-x"));
+        assert_eq!(c.suoxie_token.as_deref(), Some("jwt.y.z"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn notify_prefs_roundtrip_and_positive_only() {
         let dir = tmp_dir("dshw-config-notify-test");
         write_notify_prefs(&dir, None, None, None, None, None, None);
@@ -497,6 +528,14 @@ mod tests {
         let dir = tmp_dir("dshw-config-suoxie-test");
         write_suoxie_token(&dir, Some("  jwt.abc  ".to_string()));
         assert_eq!(read(&dir).suoxie_token.as_deref(), Some("jwt.abc"));
+        // refresh_token 独立存取，且写 JWT 不会清掉它
+        assert!(read(&dir).suoxie_refresh_token.is_none());
+        write_suoxie_refresh_token(&dir, Some("  rt.xyz  ".to_string()));
+        assert_eq!(read(&dir).suoxie_refresh_token.as_deref(), Some("rt.xyz"));
+        assert_eq!(read(&dir).suoxie_token.as_deref(), Some("jwt.abc"));
+        // 空 refresh_token → 清空
+        write_suoxie_refresh_token(&dir, Some("   ".to_string()));
+        assert!(read(&dir).suoxie_refresh_token.is_none());
         write_provider(&dir, "suoxie");
         assert_eq!(read(&dir).provider, "suoxie");
         // 未知供应商归一为 deepseek

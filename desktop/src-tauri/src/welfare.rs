@@ -5,7 +5,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde_json::{json, Value};
 use tauri::{Emitter, Manager};
 
-use crate::{apilog, balance, config};
+use crate::{apilog, balance, config, login};
 
 const API: &str = "https://suoxie.codes/api/v1";
 const CHAT_URL: &str = "https://suoxie.codes/v1/chat/completions";
@@ -77,7 +77,8 @@ pub fn need_api_call(s: &Value) -> bool {
         && !bool_at(s, "/checkin/api_requirement_met")
 }
 
-/// 抽奖条件：启用 + (本身可抽 或 刚签到解锁) + 未超每日次数。limit<=0 视为不限。
+/// 抽奖条件：启用 + 已解锁（连签达标等） + (本身可抽 或 刚签到解锁) + 未超每日次数。
+/// limit<=0 视为不限；缺少 unlock 字段的旧payload按已解锁处理。
 pub fn should_draw(s: &Value, just_checked_in: bool) -> bool {
     let limit = s
         .pointer("/lottery/daily_limit")
@@ -87,7 +88,18 @@ pub fn should_draw(s: &Value, just_checked_in: bool) -> bool {
         .pointer("/lottery/daily_used")
         .and_then(balance::num_or_str)
         .unwrap_or(0.0);
+    let unlocked = s
+        .pointer("/lottery/unlock/unlocked")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+    // 「签到后才解锁」可以由本次签到兑现；连签不足之类的门槛签到也解决不了，别去撞 403
+    let reason = s
+        .pointer("/lottery/unlock/reason")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let blocked = !unlocked && !(just_checked_in && reason == "checkin_required");
     bool_at(s, "/lottery/enabled")
+        && !blocked
         && (bool_at(s, "/lottery/can_draw") || just_checked_in)
         && (limit <= 0.0 || used < limit)
 }
@@ -164,7 +176,13 @@ pub async fn run_once(
         parts.push("签到已完成".to_string());
     }
 
-    // 3. 抽奖（免费，服务端自己校验签到/次数，被拒即报错、下小时重试）。
+    // 3. 抽奖（免费，服务端自己校验签到/次数）。刚签到时先重取状态，让
+    //    「连签达标解锁」在服务端生效后再判断，避免拿着签到前的快照去抽被 403。
+    if just_in {
+        if let Ok(fresh) = get_status(client, &auth).await {
+            s = fresh;
+        }
+    }
     if should_draw(&s, just_in) {
         let idem = format!("{:x}", now_nanos());
         let body = call(
@@ -229,16 +247,69 @@ pub async fn execute(app: &tauri::AppHandle) -> Result<Value, String> {
     r
 }
 
+async fn ensure_jwt(app: &tauri::AppHandle, force: bool) -> Result<String, String> {
+    let st = app.state::<crate::app_state::AppState>();
+    let client = st.client.clone();
+    let (jwt, refresh, attach) = {
+        let _g = st.cfg.lock().unwrap_or_else(|e| e.into_inner());
+        let cfg = config::read(&st.dir);
+        (
+            cfg.suoxie_token,
+            cfg.suoxie_refresh_token,
+            cfg.debug_attach.then_some(cfg.debug_port),
+        )
+    };
+    if !force {
+        if let Some(j) = jwt.filter(|j| login::token_valid(j, login::REFRESH_MARGIN)) {
+            return Ok(j);
+        }
+    }
+    // 过期/临近过期：先静默续期（refresh_token → 已开着的调试浏览器），失败才报错
+    let t = login::refresh_suoxie_quiet(&client, refresh.as_deref(), attach).await?;
+    {
+        let _g = st.cfg.lock().unwrap_or_else(|e| e.into_inner());
+        config::write_suoxie_token(&st.dir, Some(t.token.clone()));
+        if let Some(rt) = t.refresh_token {
+            config::write_suoxie_refresh_token(&st.dir, Some(rt));
+        }
+    }
+    Ok(t.token)
+}
+
+fn is_auth_error(e: &str) -> bool {
+    // 只认真正的登录态失效；抽奖「前置条件不满足」这类业务 403 不能当成凭据问题
+    // （否则会白白换一次令牌，还会误弹「凭据失效」长气泡）。
+    // chat 走的是 sk- API Key，与登录 JWT 是两套凭据：Key 失效/欠费导致的 401
+    // 不代表登录态失效，绝不能据此让用户重新登录。
+    if e.starts_with("chat ") {
+        return false;
+    }
+    e.contains("HTTP 401")
+        || e.contains("TOKEN_EXPIRED")
+        || e.contains("Token has expired")
+        || e.contains("invalid_token")
+        || e.contains("unauthorized")
+}
+
 async fn execute_inner(app: &tauri::AppHandle) -> Result<Value, String> {
     let st = app.state::<crate::app_state::AppState>();
-    let cfg = {
+    let client = st.client.clone();
+    let (key, model) = {
         let _g = st.cfg.lock().unwrap_or_else(|e| e.into_inner());
-        config::read(&st.dir)
+        let cfg = config::read(&st.dir);
+        let key = cfg
+            .suoxie_api_key
+            .clone()
+            .ok_or("缺梭子蟹 API Key，请到设置页补齐".to_string())?;
+        (key, cfg.suoxie_welfare_model)
     };
-    let (Some(jwt), Some(key)) = (cfg.suoxie_token.clone(), cfg.suoxie_api_key.clone()) else {
-        return Err("缺梭子蟹 JWT 或 API Key，请到设置页补齐".to_string());
-    };
-    let res = run_once(&st.client, &jwt, &key, &cfg.suoxie_welfare_model).await;
+    let jwt = ensure_jwt(app, false).await?;
+    let mut res = run_once(&client, &jwt, &key, &model).await;
+    // 令牌在流程中途过期（101 秒窗口）：续期一次后再跑一遍，别等到下一轮
+    if matches!(&res, Err(e) if is_auth_error(e)) {
+        let fresh = ensure_jwt(app, true).await?;
+        res = run_once(&client, &fresh, &key, &model).await;
+    }
     let payload = match &res {
         Ok(v) => {
             if let Some(d) = v.get("date").and_then(|x| x.as_str()) {
@@ -247,9 +318,16 @@ async fn execute_inner(app: &tauri::AppHandle) -> Result<Value, String> {
                     config::write_suoxie_welfare_date(&st.dir, Some(d.to_string()));
                 }
             }
-            v.clone()
+            let mut v = v.clone();
+            v["needsUser"] = json!(false);
+            v
         }
-        Err(e) => json!({ "ok": false, "error": e, "date": balance::suoxie_today() }),
+        Err(e) => {
+            if is_auth_error(e) {
+                crate::mark_needs_user(app, "suoxie", e);
+            }
+            json!({ "ok": false, "error": e, "date": balance::suoxie_today(), "needsUser": is_auth_error(e) })
+        }
     };
     if let Some(win) = app.get_webview_window("main") {
         let _ = win.emit("suoxie-welfare", &payload);
@@ -257,8 +335,8 @@ async fn execute_inner(app: &tauri::AppHandle) -> Result<Value, String> {
     res
 }
 
-/// 后台循环：启动即查一次，之后每小时一次。按上海时区日期防当日重复；
-/// token 过期/网络抖动不记完成，下一小时自动重试。
+/// 后台循环：启动即查一次，之后每 15 分钟一次。按上海时区日期防当日重复；
+/// 令牌过期/网络抖动不记完成，下一轮自动重试（续期在 ensure_jwt 里完成）。
 pub async fn daily_loop(app: tauri::AppHandle) {
     loop {
         let today_due = {
@@ -275,7 +353,7 @@ pub async fn daily_loop(app: tauri::AppHandle) {
                 eprintln!("[welfare] 梭子蟹福利自动化失败: {e}");
             }
         }
-        tokio::time::sleep(Duration::from_secs(3600)).await;
+        tokio::time::sleep(Duration::from_secs(900)).await;
     }
 }
 
@@ -299,6 +377,22 @@ mod tests {
     }
 
     #[test]
+    fn auth_error_ignores_api_key_failures() {
+        // 登录 JWT 失效才算凭据问题
+        assert!(is_auth_error("HTTP 401 TOKEN_EXPIRED"));
+        assert!(is_auth_error("HTTP 401 Token has expired"));
+        // sk- API Key 的 401（欠费/被吊销）与登录态无关，不能让人去重新登录
+        assert!(!is_auth_error(
+            "chat HTTP 401: {\"error\":\"invalid api key\"}"
+        ));
+        // 抽奖前置条件 403 也不是凭据问题
+        assert!(!is_auth_error(
+            "HTTP 403 welfare lottery prerequisite is not met"
+        ));
+        assert!(!is_auth_error("梭子蟹接口超时"));
+    }
+
+    #[test]
     fn real_sample_gates_flow() {
         let s = today_status();
         assert!(need_api_call(&s));
@@ -315,5 +409,17 @@ mod tests {
         assert!(!need_api_call(&done));
         assert!(!should_draw(&done, false));
         assert_eq!(makeup_dates(&done), vec!["2026-09-02"]);
+    }
+
+    #[test]
+    fn lottery_requires_unlock() {
+        // 实测 2026-11-11：连签不足 3 天时 unlock.unlocked=false，签到后去抽会 403
+        let mut s = today_status();
+        s["lottery"]["unlock"] =
+            json!({"unlocked": false, "reason": "streak_required", "required_streak_days": 3});
+        assert!(!should_draw(&s, true));
+        s["lottery"]["unlock"] =
+            json!({"unlocked": true, "reason": "eligible", "required_streak_days": 3});
+        assert!(should_draw(&s, true));
     }
 }

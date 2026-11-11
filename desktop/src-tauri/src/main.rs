@@ -39,7 +39,9 @@ fn main() {
                 client,
                 cache: std::sync::Mutex::new(None),
                 busy: tokio::sync::Mutex::new(()),
-                credential_retry: std::sync::atomic::AtomicBool::new(false),
+                credential_retry_at: std::sync::Mutex::new(None),
+                credential_needs_user: std::sync::atomic::AtomicBool::new(false),
+                credential_busy: std::sync::atomic::AtomicBool::new(false),
                 cfg: std::sync::Mutex::new(()),
                 check_update: std::sync::atomic::AtomicBool::new(false),
             });
@@ -62,6 +64,7 @@ fn main() {
             save_bailian_credentials,
             capture_suoxie_token,
             save_suoxie_token,
+            refresh_credentials_now,
             save_suoxie_welfare,
             run_suoxie_welfare,
             get_usage_providers,
@@ -163,6 +166,27 @@ fn handle_menu_event(app: &tauri::AppHandle, id: &str) {
                 eprintln!("open settings for update check failed: {e}");
             }
         }
+        // 手动更新当前供应商的登录凭据（会拉起浏览器，适合凭据失效时点一下）
+        "credentials" | "popup_credentials" => {
+            let app = app.clone();
+            tauri::async_runtime::spawn(async move {
+                let provider = {
+                    let st = app.state::<AppState>();
+                    let _g = st.cfg.lock().unwrap_or_else(|e| e.into_inner());
+                    config::read(&st.dir).provider
+                };
+                if let Err(e) = refresh_credentials_now(app.clone()).await {
+                    eprintln!("[credential] 手动更新失败: {e}");
+                    // 「这次没抓到」不等于「已保存的凭据失效」（常见于调试浏览器没开
+                    // deepseek 页 / 没登录）。不能置 needs_user，否则鲸鱼会一直挂着
+                    // 「凭据失效」长气泡，直到进程退出。只把真实原因回给前端。
+                    let _ = app.emit(
+                        "credential-error",
+                        json!({ "provider": provider, "error": e }),
+                    );
+                }
+            });
+        }
         _ => {}
     }
 }
@@ -182,8 +206,15 @@ fn build_app_menu(handle: &tauri::AppHandle, prefix: &str) -> tauri::Result<Menu
         true,
         None::<&str>,
     )?;
+    let credentials = MenuItem::with_id(
+        handle,
+        format!("{prefix}credentials"),
+        "更新登录凭据",
+        true,
+        None::<&str>,
+    )?;
     let quit = MenuItem::with_id(handle, format!("{prefix}quit"), "退出", true, None::<&str>)?;
-    Menu::with_items(handle, &[&settings, &update, &quit])
+    Menu::with_items(handle, &[&settings, &credentials, &update, &quit])
 }
 
 /// 托盘：设置 / 检查更新 / 退出。
@@ -245,70 +276,204 @@ fn open_settings_window(app: &tauri::AppHandle, check_update: bool) -> tauri::Re
 async fn get_balance(app: tauri::AppHandle) -> Result<Value, String> {
     let state = app.state::<AppState>();
     if let Some(p) = balance::cached_payload(&state) {
+        settle_credential_state(&app, &p);
         return Ok(p);
     }
     let _guard = state.busy.lock().await;
     if let Some(p) = balance::cached_payload(&state) {
+        settle_credential_state(&app, &p);
         return Ok(p);
     }
     let mut payload = balance::get_balance_payload(&state).await;
-    if payload["credentialRefreshNeeded"].as_bool() == Some(true)
-        && !state
-            .credential_retry
-            .swap(true, std::sync::atomic::Ordering::Relaxed)
-    {
-        let result = refresh_expired_credentials(&app).await;
-        match result {
-            Ok(()) => {
-                state
-                    .credential_retry
-                    .store(false, std::sync::atomic::Ordering::Relaxed);
-                *state.cache.lock().unwrap_or_else(|e| e.into_inner()) = None;
-                payload = balance::get_balance_payload(&state).await;
-                payload["credentialRefresh"] = json!("refreshed");
-                let provider = config::read(&state.dir).provider;
-                if let Some(win) = app.get_webview_window("settings") {
-                    let _ = win.emit(
-                        "credential-refresh-status",
-                        json!({"status":"refreshed", "provider":provider}),
-                    );
+    if payload["credentialRefreshNeeded"].as_bool() == Some(true) {
+        let provider = config::read(&state.dir).provider;
+        payload["credentialRefreshProvider"] = json!(provider);
+        let scope = payload["credentialRefreshScope"]
+            .as_str()
+            .unwrap_or("login")
+            .to_string();
+        if claim_credential_attempt(&state)
+            && !state
+                .credential_busy
+                .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            match refresh_credentials_quiet(&app).await {
+                Ok(()) => {
+                    // 不在这里直接清 needs_user：交给末尾 settle_credential_state
+                    // 统一清理并广播 credential-ok，避免漏发事件。
+                    *state.cache.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                    payload = balance::get_balance_payload(&state).await;
+                    payload["credentialRefresh"] = json!("refreshed");
+                    if let Some(win) = app.get_webview_window("settings") {
+                        let _ = win.emit(
+                            "credential-refresh-status",
+                            json!({"status":"refreshed", "provider":provider}),
+                        );
+                    }
+                    // 续期成功且今天福利还没跑：立刻补一次，不必等下一轮循环
+                    if provider == "suoxie" {
+                        maybe_run_welfare_now(&app);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("[credential] 自动更新失败（{provider}）: {e}");
+                    payload["credentialRefresh"] = json!("failed");
+                    payload["credentialRefreshError"] = json!(e.clone());
+                    mark_needs_user_scoped(&app, &provider, &scope, &e);
                 }
             }
-            Err(e) => {
-                payload["credentialRefresh"] = json!("failed");
-                payload["credentialRefreshError"] = json!(e.clone());
-                let provider = config::read(&state.dir).provider;
-                if let Some(win) = app.get_webview_window("settings") {
-                    let _ = win.emit(
-                        "credential-refresh-status",
-                        json!({"status":"failed", "provider":provider, "error":e}),
-                    );
-                }
-            }
+        } else {
+            // 冷却中：不重复尝试，但保持「需要手动更新」的提示
+            payload["credentialRefresh"] = json!("failed");
+            payload["credentialRefreshError"] = json!("凭据更新失败，点击鲸鱼重试");
         }
     }
+    settle_credential_state(&app, &payload);
     Ok(payload)
 }
 
-async fn refresh_expired_credentials(app: &tauri::AppHandle) -> Result<(), String> {
-    let (provider, attach) = {
+/// 自动续期冷却：10 分钟内只尝试一次；失败也会在冷却结束后重试（旧实现的
+/// 布尔开关一旦置位就再也不会重试，是这次连错三天的第二个原因）。
+fn claim_credential_attempt(state: &AppState) -> bool {
+    const COOLDOWN: Duration = Duration::from_secs(10 * 60);
+    let mut at = state
+        .credential_retry_at
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    match *at {
+        Some(t) if t.elapsed() < COOLDOWN => false,
+        _ => {
+            *at = Some(std::time::Instant::now());
+            true
+        }
+    }
+}
+
+/// 一次成功的余额抓取就是「凭据确实可用」的最强证据：把之前因续期失败挂上的
+/// 「需要手动更新」清掉。否则一次误判会挂到进程退出——长气泡永不消失，用户还会
+/// 以为自己明明没过期却被判失效。
+fn settle_credential_state(app: &tauri::AppHandle, payload: &Value) {
+    if payload["credentialRefreshNeeded"].as_bool() == Some(true) {
+        return;
+    }
+    let state = app.state::<AppState>();
+    if !state
+        .credential_needs_user
+        .swap(false, std::sync::atomic::Ordering::SeqCst)
+    {
+        return;
+    }
+    let provider = {
+        let _g = state.cfg.lock().unwrap_or_else(|e| e.into_inner());
+        config::read(&state.dir).provider
+    };
+    if let Some(win) = app.get_webview_window("main") {
+        let _ = win.emit("credential-ok", json!({ "provider": provider }));
+    }
+    if let Some(win) = app.get_webview_window("settings") {
+        let _ = win.emit(
+            "credential-refresh-status",
+            json!({ "status": "refreshed", "provider": provider }),
+        );
+    }
+}
+
+/// 凭据需要用户介入：只提示一次，之后保留「需要手动更新」状态直到续期成功。
+pub(crate) fn mark_needs_user(app: &tauri::AppHandle, provider: &str, error: &str) {
+    mark_needs_user_scoped(app, provider, "login", error)
+}
+
+/// scope: "login" = 登录令牌真的失效；"usage" = 仅用量令牌失效（余额不受影响）。
+pub(crate) fn mark_needs_user_scoped(
+    app: &tauri::AppHandle,
+    provider: &str,
+    scope: &str,
+    error: &str,
+) {
+    let state = app.state::<AppState>();
+    let first = !state
+        .credential_needs_user
+        .swap(true, std::sync::atomic::Ordering::SeqCst);
+    if first {
+        let payload = json!({ "provider": provider, "scope": scope, "error": error });
+        let _ = app.emit("credential-needed", payload.clone());
+        if let Some(win) = app.get_webview_window("settings") {
+            let _ = win.emit(
+                "credential-refresh-status",
+                json!({"status":"failed", "provider": provider, "error": error}),
+            );
+        }
+    }
+}
+
+/// 已确认凭据可用：清掉待办、重置冷却、通知前端收气泡。
+fn confirm_credential_ok(app: &tauri::AppHandle, provider: &str) {
+    let st = app.state::<AppState>();
+    st.credential_needs_user
+        .store(false, std::sync::atomic::Ordering::Relaxed);
+    *st.credential_retry_at
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) = None;
+    if let Some(win) = app.get_webview_window("main") {
+        let _ = win.emit("credential-ok", json!({ "provider": provider }));
+        let _ = win.emit("refresh-balance", ());
+    }
+    if let Some(win) = app.get_webview_window("settings") {
+        let _ = win.emit(
+            "credential-refresh-status",
+            json!({"status":"refreshed", "provider": provider}),
+        );
+    }
+}
+
+/// 续期成功后，若今天签到还没完成就立刻跑一次福利（后台循环只管兜底）。
+fn maybe_run_welfare_now(app: &tauri::AppHandle) {
+    let due = {
         let state = app.state::<AppState>();
-        let _guard = state.cfg.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = state.cfg.lock().unwrap_or_else(|e| e.into_inner());
         let cfg = config::read(&state.dir);
-        (cfg.provider, cfg.debug_attach.then_some(cfg.debug_port))
+        cfg.suoxie_welfare
+            && cfg.suoxie_token.is_some()
+            && cfg.suoxie_api_key.is_some()
+            && cfg.suoxie_welfare_date.as_deref() != Some(balance::suoxie_today().as_str())
+    };
+    if due {
+        let app = app.clone();
+        tauri::async_runtime::spawn(async move {
+            if let Err(e) = welfare::execute(&app).await {
+                eprintln!("[welfare] 续期后补跑失败: {e}");
+            }
+        });
+    }
+}
+
+/// 后台静默续期：只用 refresh_token / 已开着的调试浏览器，**绝不拉起新窗口**。
+/// 需要人工登录时由前端长气泡引导用户点击（走 refresh_credentials_now / capture_*）。
+async fn refresh_credentials_quiet(app: &tauri::AppHandle) -> Result<(), String> {
+    const NO_ATTACH: &str = "未开启「附加调试浏览器」，无法自动更新该凭据";
+    let state = app.state::<AppState>();
+    let client = state.client.clone();
+    let (provider, attach, refresh_token) = {
+        let _g = state.cfg.lock().unwrap_or_else(|e| e.into_inner());
+        let cfg = config::read(&state.dir);
+        (
+            cfg.provider,
+            cfg.debug_attach.then_some(cfg.debug_port),
+            cfg.suoxie_refresh_token,
+        )
     };
     match provider.as_str() {
         "deepseek" => {
-            let token = login::capture_platform_token(attach).await?;
-            let state = app.state::<AppState>();
-            let _guard = state.cfg.lock().unwrap_or_else(|e| e.into_inner());
+            let port = attach.ok_or(NO_ATTACH)?;
+            let token = login::capture_platform_token_quiet(port).await?;
+            let _g = state.cfg.lock().unwrap_or_else(|e| e.into_inner());
             let key = config::read(&state.dir).api_key;
             config::write_credentials(&state.dir, key, Some(token));
         }
         "bailian" => {
-            let creds = login::capture_bailian_credentials(attach).await?;
-            let state = app.state::<AppState>();
-            let _guard = state.cfg.lock().unwrap_or_else(|e| e.into_inner());
+            let port = attach.ok_or(NO_ATTACH)?;
+            let creds = login::capture_bailian_quiet(port).await?;
+            let _g = state.cfg.lock().unwrap_or_else(|e| e.into_inner());
             config::write_bailian_credentials(
                 &state.dir,
                 Some(creds.cookie),
@@ -316,14 +481,117 @@ async fn refresh_expired_credentials(app: &tauri::AppHandle) -> Result<(), Strin
             );
         }
         "suoxie" => {
-            let token = login::capture_suoxie_token(attach).await?;
-            let state = app.state::<AppState>();
-            let _guard = state.cfg.lock().unwrap_or_else(|e| e.into_inner());
-            config::write_suoxie_token(&state.dir, Some(token));
+            let t = login::refresh_suoxie_quiet(&client, refresh_token.as_deref(), attach).await?;
+            let _g = state.cfg.lock().unwrap_or_else(|e| e.into_inner());
+            config::write_suoxie_token(&state.dir, Some(t.token));
+            if let Some(rt) = t.refresh_token {
+                config::write_suoxie_refresh_token(&state.dir, Some(rt));
+            }
         }
         _ => return Err("不支持自动刷新此供应商凭证".to_string()),
     }
     Ok(())
+}
+
+/// 用户主动触发（点鲸鱼 / 右键菜单）：允许拉起新浏览器登录，成功后立刻补签到。
+#[tauri::command]
+async fn refresh_credentials_now(app: tauri::AppHandle) -> Result<Value, String> {
+    let busy = app.state::<AppState>();
+    if busy
+        .credential_busy
+        .swap(true, std::sync::atomic::Ordering::SeqCst)
+    {
+        // 重复点击/菜单与鲸鱼同时触发：这是正常并发，不是「更新失败」，
+        // 不能弹红色失败气泡把「凭据有效」的提示顶掉。
+        return Ok(json!({ "credential": "busy" }));
+    }
+    let r = do_refresh_credentials_now(app.clone()).await;
+    app.state::<AppState>()
+        .credential_busy
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    r
+}
+
+async fn do_refresh_credentials_now(app: tauri::AppHandle) -> Result<Value, String> {
+    let provider = {
+        let state = app.state::<AppState>();
+        let _g = state.cfg.lock().unwrap_or_else(|e| e.into_inner());
+        config::read(&state.dir).provider
+    };
+    // 1) 先用已保存的凭据打一次真实接口：能用就到此为止，绝不打开浏览器。
+    //    旧实现无条件 capture_*，哪怕凭据完全正常也会拉起登录窗——这就是
+    //    「余额和用量都正常却弹浏览器让我登录」的直接原因。
+    let (verdict, detail) = {
+        let st = app.state::<AppState>();
+        balance::probe_credential(&st, &provider).await
+    };
+    apilog::note(
+        "credential",
+        &format!(
+            "手动更新自检 provider={provider} => {}（{detail}）",
+            verdict.as_str()
+        ),
+    );
+    match verdict {
+        balance::CredentialState::Valid => {
+            confirm_credential_ok(&app, &provider);
+            return Ok(json!({
+                "credential": "valid",
+                "provider": provider,
+                "detail": detail,
+            }));
+        }
+        balance::CredentialState::Unknown => {
+            // 网络/接口抽风：既不能断言失效，更不能把人赶去重新登录。
+            return Err(format!(
+                "暂时无法确认凭据状态（{detail}），未打开登录窗口；请稍后重试"
+            ));
+        }
+        balance::CredentialState::Invalid => {}
+    }
+
+    // 2) 确认失效前，先给静默续期一次机会（refresh_token / 已开着的调试浏览器）。
+    if let Err(e) = refresh_credentials_quiet(&app).await {
+        apilog::note("credential", &format!("静默续期未成功: {e}"));
+    }
+    let (again, detail2) = {
+        let st = app.state::<AppState>();
+        balance::probe_credential(&st, &provider).await
+    };
+    apilog::note(
+        "credential",
+        &format!(
+            "静默续期后复检 provider={provider} => {}（{detail2}）",
+            again.as_str()
+        ),
+    );
+    match again {
+        balance::CredentialState::Valid => {
+            confirm_credential_ok(&app, &provider);
+            return Ok(json!({
+                "credential": "refreshed",
+                "provider": provider,
+                "detail": detail2,
+            }));
+        }
+        balance::CredentialState::Unknown => {
+            return Err(format!(
+                "续期结果无法确认（{detail2}），未打开登录窗口；请稍后重试"
+            ));
+        }
+        balance::CredentialState::Invalid => {}
+    }
+
+    // 3) 只有确认已保存的凭据真的失效，才允许拉起登录浏览器。
+    let out = match provider.as_str() {
+        "suoxie" => capture_suoxie_token(app.clone()).await?,
+        "bailian" => capture_bailian_credentials(app.clone()).await?,
+        _ => capture_login_token(app.clone())
+            .await
+            .map(|t| json!({ "platformToken": t }))?,
+    };
+    confirm_credential_ok(&app, &provider);
+    Ok(out)
 }
 
 #[tauri::command]
@@ -348,6 +616,10 @@ fn get_config(app: tauri::AppHandle) -> Value {
         "suoxieWelfare": cfg.suoxie_welfare,
         "suoxieWelfareModel": cfg.suoxie_welfare_model,
         "suoxieWelfareDate": cfg.suoxie_welfare_date,
+        "hasSuoxieRefresh": cfg.suoxie_refresh_token.is_some(),
+        "credentialNeedsUser": st
+            .credential_needs_user
+            .load(std::sync::atomic::Ordering::Relaxed),
         "dsHourlyLimit": cfg.ds_hourly_limit,
         "dsMinBalance": cfg.ds_min_balance,
         "blHourlyPct": cfg.bl_hourly_pct,
@@ -557,21 +829,31 @@ fn save_bailian_credentials(
     json!({ "ok": true })
 }
 
-/// 梭子蟹：自动抓取登录 JWT，写回 config，触发刷新。
+/// 梭子蟹：自动抓取登录 JWT（+ refresh_token），写回 config，触发刷新。
 #[tauri::command]
 async fn capture_suoxie_token(app: tauri::AppHandle) -> Result<Value, String> {
     let attach = attach_port(&app);
-    let token = login::capture_suoxie_token(attach).await?;
-    let st = app.state::<AppState>();
-    let _g = st.cfg.lock().unwrap_or_else(|e| e.into_inner());
-    config::write_suoxie_token(&st.dir, Some(token.clone()));
+    let tokens = login::capture_suoxie_token(attach).await?;
+    {
+        let st = app.state::<AppState>();
+        let _g = st.cfg.lock().unwrap_or_else(|e| e.into_inner());
+        config::write_suoxie_token(&st.dir, Some(tokens.token.clone()));
+        if let Some(rt) = tokens.refresh_token.clone() {
+            config::write_suoxie_refresh_token(&st.dir, Some(rt));
+            // 有了 refresh_token，以后到期前可静默续期，不必再开浏览器
+        }
+    }
+    app.state::<AppState>()
+        .credential_needs_user
+        .store(false, std::sync::atomic::Ordering::Relaxed);
     if let Some(win) = app.get_webview_window("main") {
         let _ = win.emit("refresh-balance", ());
     }
-    Ok(json!({ "suoxieToken": token }))
+    maybe_run_welfare_now(&app);
+    Ok(json!({ "suoxieToken": tokens.token }))
 }
 
-/// 手动保存梭子蟹 token（留空 = 保留原值）。
+/// 手动保存梭子蟹 token（留空 = 保留原值；清空时一并清掉 refresh_token）。
 #[tauri::command]
 fn save_suoxie_token(app: tauri::AppHandle, suoxie_token: Option<String>) -> Value {
     let st = app.state::<AppState>();
@@ -579,7 +861,11 @@ fn save_suoxie_token(app: tauri::AppHandle, suoxie_token: Option<String>) -> Val
     let dir = &st.dir;
     let keep = config::read(dir).suoxie_token;
     let token = suoxie_token.filter(|s| !s.trim().is_empty()).or(keep);
+    let cleared = token.is_none();
     config::write_suoxie_token(dir, token);
+    if cleared {
+        config::write_suoxie_refresh_token(dir, None);
+    }
     json!({ "ok": true })
 }
 

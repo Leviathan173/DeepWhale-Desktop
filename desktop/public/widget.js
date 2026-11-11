@@ -257,6 +257,7 @@ bubbleBox.appendChild(textBox)
 bubbleBox.addEventListener('click', function (e) {
   e.stopPropagation()
   if (!bubbleShown) return
+  if (stickyLines) return
   if (bubbleRandomActive) {
     // 再次点击：关闭
     hideBubble()
@@ -308,7 +309,12 @@ var state = {
   hasSuoxie: false,
   suoxie: null,
   credentialRefreshNeeded: false,
-  credentialRefresh: ''
+  credentialRefresh: '',
+  // 凭据失效待用户处理：非空时单击鲸鱼改为「更新登录凭据」，不再是轮换供应商
+  needCredential: '',
+  // login = 登录令牌失效；usage = 仅用量令牌失效（余额仍正常）
+  credentialScope: 'login',
+  credentialBusy: false
 }
 var dshAppearance = true
 var dshPet = true
@@ -1213,7 +1219,112 @@ function showNotifBubble(lines) {
   applyBubbleLines(lines)
   bubbleBox.classList.add('dshwv-bubble-open')
   playDshBalance()
-  bubbleTimer = setTimeout(hideBubble, BUBBLE_MS)
+  // 凭据待办优先：通知也照常弹，但不要把它顶掉（下一轮 refresh 会把待办重新铺上）
+  if (!stickyLines) bubbleTimer = setTimeout(hideBubble, BUBBLE_MS)
+}
+
+// ---- 凭据待办长气泡：不自动关闭，直到用户点鲸鱼更新或续期成功 ----
+var stickyLines = null
+function credentialProviderLabel(p) {
+  if (p === 'bailian') return '百炼'
+  if (p === 'suoxie') return '梭子蟹'
+  return 'DeepSeek'
+}
+function credentialStickyLines() {
+  if (state.credentialScope === 'usage') {
+    return [
+      { t: '用量令牌失效', s: 'A', c: '#e0433f' },
+      { t: '点我更新', s: 'B', c: '' },
+      { t: '不影响余额显示', s: 'C', c: '' }
+    ]
+  }
+  return [
+    { t: credentialProviderLabel(state.needCredential) + '登录失效', s: 'A', c: '#e0433f' },
+    { t: '点我更新', s: 'B', c: '' },
+    { t: '点鲸鱼打开浏览器', s: 'C', c: '' }
+  ]
+}
+function showStickyBubble(lines) {
+  stickyLines = lines || credentialStickyLines()
+  if (bubbleTimer) { clearTimeout(bubbleTimer); bubbleTimer = null }
+  bubbleShown = true
+  bubbleRandomActive = false
+  bubbleRandomLines = null
+  applyBubbleLines(stickyLines)
+  bubbleBox.classList.add('dshwv-bubble-open')
+  recheckPassThrough()
+}
+function clearStickyBubble() {
+  stickyLines = null
+  credentialOkLines = null
+  credentialErrorLines = null
+  if (bubbleTimer) { clearTimeout(bubbleTimer); bubbleTimer = null }
+  if (bubbleShown) hideBubble()
+}
+// 自检通过 / 续期成功的短提示：用 sticky 保证不被紧接着的余额刷新顶掉，4 秒后自清。
+var credentialOkTimer = null
+var credentialOkLines = null
+function showCredentialOk(hadPending) {
+  var lines = [
+    { t: hadPending ? '凭据已恢复' : '凭据有效', s: 'A', c: '#2fa24c' },
+    { t: '无需重新登录', s: 'C', c: '#2fa24c' }
+  ]
+  showStickyBubble(lines)
+  credentialOkLines = lines
+  if (credentialOkTimer) clearTimeout(credentialOkTimer)
+  credentialOkTimer = setTimeout(function () {
+    credentialOkTimer = null
+    if (stickyLines === credentialOkLines) {
+      clearStickyBubble()
+      render()
+    }
+  }, 4000)
+}
+// 「这次没抓到凭据」不是「凭据已失效」：只提示一次并限时收起。
+// 若凭据真的失效，下一轮余额刷新（≤60s）会把待办长气泡重新铺上。
+var credentialErrorTimer = null
+var credentialErrorLines = null
+function showCredentialFailure(provider, msg) {
+  var lines = [
+    { t: '凭据更新未完成', s: 'A', c: '#e0433f' },
+    { t: (credentialProviderLabel(provider) + '：' + String(msg || '未知错误')).slice(0, 60), s: 'C', c: '#e0433f', w: true }
+  ]
+  showStickyBubble(lines)
+  credentialErrorLines = lines
+  if (credentialErrorTimer) clearTimeout(credentialErrorTimer)
+  credentialErrorTimer = setTimeout(function () {
+    credentialErrorTimer = null
+    if (stickyLines === credentialErrorLines) {
+      clearStickyBubble()
+      render()
+    }
+  }, 15000)
+}
+// 单击鲸鱼：先让 Rust 自检已保存的凭据，真失效才拉起登录浏览器。
+function startCredentialRefresh() {
+  if (state.credentialBusy) return
+  state.credentialBusy = true
+  showStickyBubble([
+    { t: '正在检查凭据', s: 'A', c: '' },
+    { t: '通常无需登录', s: 'B', c: '' },
+    { t: '失效才会打开浏览器', s: 'C', c: '' }
+  ])
+  WHALE.invoke('refresh_credentials_now').then(function (res) {
+    var kind = res && res.credential
+    // 另一次更新正在进行：等它广播结果即可，别把提示改成「失败」
+    if (kind === 'busy') return
+    // 自检通过 / 静默续期成功：都不该开浏览器，也不该继续挂待办
+    state.needCredential = ''
+    state.credentialRefreshNeeded = false
+    clearStickyBubble()
+    if (kind === 'valid' || kind === 'refreshed') showCredentialOk(false)
+    refresh(true)
+  }).catch(function (err) {
+    var msg = String((err && err.message) || err || '未知错误')
+    showCredentialFailure(state.needCredential || state.provider, msg)
+  }).finally(function () {
+    state.credentialBusy = false
+  })
 }
 
 function clamp(v, lo, hi) { return v < lo ? lo : (v > hi ? hi : v) }
@@ -1280,6 +1391,13 @@ function render() {
   renderDsh()
   syncDshAmbient()
   root.classList.toggle('dshwv-classic', !dshAppearance)
+  // 凭据待办胜出：长气泡一直显示到用户处理/续期成功，别被余额渲染顶掉
+  if (stickyLines) {
+    bubbleShown = true
+    applyBubbleLines(stickyLines)
+    bubbleBox.classList.add('dshwv-bubble-open')
+    return
+  }
   if (bubbleRandomActive && bubbleRandomLines) {
     applyBubbleLines(bubbleRandomLines)
     return
@@ -1417,6 +1535,15 @@ function refresh(manual) {
         state.credentialRefreshNeeded = !!data.credentialRefreshNeeded
         state.credentialRefresh = data.credentialRefresh || ''
         if (state.credentialRefresh === 'failed') state.message = data.credentialRefreshError || '凭据刷新失败'
+        // 凭据待办：只要还需要更新就保持长气泡（分钟级轮询不会把它清掉）
+        if (state.credentialRefreshNeeded) {
+          state.needCredential = String(data.credentialRefreshProvider || state.provider)
+          state.credentialScope = data.credentialRefreshScope === 'usage' ? 'usage' : 'login'
+          if (!state.credentialBusy) showStickyBubble(credentialStickyLines())
+        } else if (state.needCredential && !state.credentialBusy) {
+          state.needCredential = ''
+          clearStickyBubble()
+        }
         state.bailian = (data && data.bailian) || null
         state.suoxie = (data && data.suoxie) || null
         // 凭据存在与否以接口返回为准：configured===false 才是「没配置」；
@@ -2046,6 +2173,12 @@ function endDrag(e, clickAllowed) {
     // 单击（位移 < 4px）：睡着先唤醒；挤压弹动由 pressDown/pressUp 表达，
     // 视频外观再叠一段随机「点击回应」（刚醒的那一下留给醒来动作）
     var woke = dshUserWake()
+    // 凭据失效期间：单击鲸鱼 = 更新登录凭据（否则照旧轮换供应商）
+    if (state.needCredential) {
+      startCredentialRefresh()
+      if (!woke) playDshClick()
+      return
+    }
     cycleProvider()
     showBubble(true)
     if (!woke) playDshClick()
@@ -2154,6 +2287,11 @@ function applyConfig(d) {
   if (d && Array.isArray(d.bubbleProviders)) {
     state.bubbleProviders = d.bubbleProviders
   }
+  // 重启后凭据仍未修好：直接把待办长气泡铺上，等用户点鲸鱼
+  if (d && d.credentialNeedsUser) {
+    state.needCredential = state.provider
+    showStickyBubble(credentialStickyLines())
+  }
   applyNotifyCfg(d)
   normalizeProvider()
   render()
@@ -2177,7 +2315,32 @@ function bootWidget() {
           refresh(true)
         })
       })
-      // 梭子蟹福利自动化结果：成功播报；失败每天只提醒一次（循环每小时会重试）
+      // 后台自动续期失败：只弹长气泡等用户点鲸鱼，不自动拉浏览器
+      evt.listen('credential-needed', function (e) {
+        var d = (e && e.payload) || {}
+        state.needCredential = String(d.provider || state.provider)
+        state.credentialScope = d.scope === 'usage' ? 'usage' : 'login'
+        if (!state.credentialBusy) showStickyBubble(credentialStickyLines())
+      })
+      // 余额抓取成功 / 自检确认可用：立刻收掉可能残留的待办长气泡。
+      // 菜单触发的自检没有 invoke 回调可用于提示，这里补一个轻提示。
+      evt.listen('credential-ok', function () {
+        if (credentialErrorTimer) { clearTimeout(credentialErrorTimer); credentialErrorTimer = null }
+        var hadPending = !!state.needCredential
+        state.needCredential = ''
+        clearStickyBubble()
+        render()
+        if (!state.credentialBusy) {
+          showCredentialOk(hadPending)
+        }
+      })
+      // 右键「更新登录凭据」失败：只提示这次没抓到，不宣称凭据失效
+      evt.listen('credential-error', function (e) {
+        var d = (e && e.payload) || {}
+        if (state.credentialBusy) return
+        showCredentialFailure(String(d.provider || state.provider), d.error)
+      })
+      // 梭子蟹福利自动化结果：成功播报；失败每 15 分钟重试，凭证类失败改为长气泡待办
       var lastWelfareFail = null
       evt.listen('suoxie-welfare', function (e) {
         var d = e && e.payload
@@ -2190,6 +2353,11 @@ function bootWidget() {
           if (d.date) okLines.push({ t: '明天见~', s: 'C', c: '' })
           showNotifBubble(okLines)
           refresh(true)
+        } else if (d.needsUser) {
+          // 登录态失败：交给长气泡待办，点鲸鱼更新登录
+          state.needCredential = 'suoxie'
+          state.credentialScope = 'login'
+          if (!state.credentialBusy) showStickyBubble(credentialStickyLines())
         } else if (d.date && lastWelfareFail !== d.date) {
           lastWelfareFail = d.date
           showNotifBubble([

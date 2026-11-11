@@ -12,6 +12,8 @@
   - 阿里百炼 TokenPlan（订阅制）：显示周剩余额度百分比与周重置时间
   - 点击鲸鱼在已启用供应商间轮换（deepseek → 百炼 → …）
   - 凭据缺失的供应商自动跳过
+  - 登录态失效时后台静默续期；续不了才弹长气泡，点鲸鱼即可更新（详见「常见问题」）
+- 🎁 **梭子蟹每日福利**：自动凑一次中转调用 → 签到 → 抽奖（连签达标才抽）→ 补签漏签日；按上海时区每日一次，失败每 15 分钟重试
 - 📊 **今日已用（本地记账）**，直接按会话历史重算当日消耗：
   - opencode 记账：读取 `opencode.sqlite` 会话历史
   - Claude Code 记账：读取 `~/.claude/projects/**` 的 jsonl 用量记录
@@ -70,9 +72,9 @@ npm run tauri build   # 产出 Windows 安装包（.msi/.exe/.nsis.zip + latest.
 
 | 供应商 | 说明 |
 | ------ | ---- |
-| DeepSeek | 填入 `DEEPSEEK_API_KEY`（按量余额）。平台会话令牌可点「自动抓取」获取；令牌被服务拒绝时会尝试经调试浏览器更新 |
-| 百炼 TokenPlan | 控制台内部接口无公开 API-key 入口。设置页可抓取登录 Cookie + 请求体；检测到明确未登录时会尝试经调试浏览器更新 |
-| 梭子蟹 | 检测到登录 JWT 返回 HTTP 401/403 时会尝试经调试浏览器更新 |
+| DeepSeek | 填入 `DEEPSEEK_API_KEY`（按量余额）。平台会话令牌可点「自动抓取」获取；令牌被服务拒绝时后台会尝试经调试浏览器更新（失败后每 10 分钟重试，不弹窗） |
+| 百炼 TokenPlan | 控制台内部接口无公开 API-key 入口。设置页可抓取登录 Cookie + 请求体；检测到明确未登录时后台会尝试经调试浏览器更新（同上） |
+| 梭子蟹 | 登录 JWT 约 24h 过期。抓取时会一并保存 `refresh_token`，到期前 10 分钟自动静默续期，**不需要浏览器常开**；refresh_token 也失效时鲸鱼会弹长气泡，点一下鲸鱼即可重新登录 |
 
 ### 日常 Edge 调试浏览器
 
@@ -93,7 +95,7 @@ npm run tauri build   # 产出 Windows 安装包（.msi/.exe/.nsis.zip + latest.
 2026-10-28T12:20:11Z [deepseek] GET https://api.deepseek.com/user/balance -> 200 264ms | {"is_available":true,…
 ```
 
-- 字段：时间、来源（`deepseek` / `platform` / `bailian` / `suoxie` / `suoxie-welfare` / `suoxie-chat`）、method、完整 URL（含 query 参数）、状态码或错误原因、耗时、响应片段（单行、截断 300 字）
+- 字段：时间、来源（`deepseek` / `platform` / `bailian` / `suoxie` / `suoxie-welfare` / `suoxie-chat` / `suoxie-refresh`）、method、完整 URL（含 query 参数）、状态码或错误原因、耗时、响应片段（单行、截断 300 字）
 - 不记请求头，Authorization / cookie / API Key 不会进日志
 - 上限 10MB，超出时只保留最近约 512KB，旧行丢弃
 
@@ -152,12 +154,12 @@ cargo run --bin tts_gen            # 幂等：已存在的 mp3 跳过；改文�
 cd desktop/src-tauri
 cargo fmt --check                                # 格式
 cargo clippy --all-targets -- -D warnings        # 静态检查
-cargo test                                       # 16 项单元测试
+cargo test                                       # 37 项单元测试
 ```
 
 ## 常见问题
 
-- **凭证失效提示**：应用会在服务明确拒绝登录态时自动通过已配置的调试浏览器尝试更新；若更新失败，请打开 Edge 的 `debugprofile` 检查是否仍登录/需要人工验证，然后手动点对应的「自动获取」。
+- **凭证失效提示**：应用会在服务明确拒绝登录态时**在后台**自动续期（梭子蟹用保存的 `refresh_token`，DeepSeek/百炼用已配置的调试浏览器），失败后每 10 分钟重试一次，**后台不会新开浏览器窗口**。全部失败时鲸鱼会弹一条**不自动关闭的长气泡**，点一下鲸鱼（或右键菜单「更新登录凭据」）才会拉起浏览器登录，登录成功后自动继续并补跑当天签到。
 - **今日已用为 0**：数据源无当日会话，或模型未匹配计价表；仅 DeepSeek/Claude/Qwen 系有内置兜底价。
 - **没有声音**：音效 mp3 缺失时静默降级，忽略即可。
 - **窗口不见**：点击托盘图标菜单显示。

@@ -4,7 +4,9 @@
 use serde_json::{json, Value};
 use std::process::{Child, Command};
 use std::sync::atomic::{AtomicU16, Ordering};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+use crate::apilog;
 
 /// 每次拉起浏览器用独立调试端口 + 独立临时 profile，避免与残留实例
 /// 争用 profile SingletonLock 或端口（重试 / 连续两次抓取都会撞车）。
@@ -552,9 +554,156 @@ async fn attach_sniff_auth(
     }
 }
 
-/// 部分新版前端不再在 reload 后重新发送带 Authorization 的 API 请求，
-/// 而是从 localStorage/sessionStorage 取 JWT。仅在梭子蟹页面使用此兜底。
-async fn read_suoxie_storage_token(ws_url: &str) -> Option<String> {
+/// 后台静默抓取 DeepSeek 平台令牌：只附加常驻调试浏览器，绝不拉起新窗口。
+pub async fn capture_platform_token_quiet(port: u16) -> Result<String, String> {
+    let client = reqwest::Client::new();
+    attach_sniff_auth(
+        &client,
+        port,
+        "platform.deepseek.com",
+        "https://platform.deepseek.com/usage",
+        &["by_api_key/amount", "/api/v0/usage/"],
+        "deepseek",
+    )
+    .await
+    .ok_or_else(|| format!("{port} 不可达或没抓到 DeepSeek 令牌"))
+}
+
+/// 后台静默抓取百炼凭据：只附加常驻调试浏览器，绝不拉起新窗口。
+pub async fn capture_bailian_quiet(port: u16) -> Result<BailianCreds, String> {
+    let client = reqwest::Client::new();
+    let ws = find_or_open_page(
+        &client,
+        port,
+        "bailian.console.aliyun.com",
+        BAILIAN_PLAN_URL,
+    )
+    .await
+    .ok_or_else(|| format!("{port} 不可达或打不开百炼页"))?;
+    sniff_bailian(&ws, Instant::now() + Duration::from_secs(45), true).await
+}
+
+/// 剩余有效期低于该阈值即主动续期：余额每分钟轮询一次，提前 10 分钟换新可避免
+/// 「刚过期 → 401 → 才续期」那一轮的空窗。
+pub const REFRESH_MARGIN: Duration = Duration::from_secs(10 * 60);
+
+const SUOXIE_REFRESH_URL: &str = "https://suoxie.codes/api/v1/auth/refresh";
+
+/// 梭子蟹凭据对：JWT + 长效 refresh_token（后者可能随续期轮换）。
+pub struct SuoxieTokens {
+    pub token: String,
+    pub refresh_token: Option<String>,
+}
+
+/// JWT 中段的 exp（Unix 秒）。只解码不验签——本地只判断是否已经过期。
+pub fn jwt_exp(token: &str) -> Option<i64> {
+    let payload = token
+        .trim()
+        .trim_start_matches("Bearer ")
+        .trim()
+        .split('.')
+        .nth(1)?;
+    let bytes = b64url_decode(payload)?;
+    let v: Value = serde_json::from_slice(&bytes).ok()?;
+    v.get("exp").and_then(|e| e.as_i64())
+}
+
+/// 极简 base64url 解码（避免为一个 exp 引入新依赖）。
+fn b64url_decode(s: &str) -> Option<Vec<u8>> {
+    let mut out = Vec::with_capacity(s.len() * 3 / 4);
+    let mut buf: u32 = 0;
+    let mut bits: u32 = 0;
+    for c in s.bytes() {
+        let v = match c {
+            b'A'..=b'Z' => c - b'A',
+            b'a'..=b'z' => c - b'a' + 26,
+            b'0'..=b'9' => c - b'0' + 52,
+            b'-' | b'+' => 62,
+            b'_' | b'/' => 63,
+            b'=' | b'\r' | b'\n' => continue,
+            _ => return None,
+        } as u32;
+        buf = (buf << 6) | v;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((buf >> bits) as u8);
+            buf &= (1 << bits) - 1;
+        }
+    }
+    Some(out)
+}
+
+/// 令牌是否还能用：能解出 exp 就要求剩余 > margin；解不出 exp 视为可用
+/// （非 JWT 场景保持旧行为，真正的失效仍由接口 401 兜底）。
+pub fn token_valid(token: &str, margin: Duration) -> bool {
+    match jwt_exp(token) {
+        Some(exp) => {
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0);
+            exp - now > margin.as_secs() as i64
+        }
+        None => true,
+    }
+}
+
+/// 用 refresh_token 换新 JWT（与 suoxie 前端同款接口）。
+/// 响应 {code:0, data:{access_token, refresh_token, expires_in}}，refresh_token 会轮换。
+pub async fn refresh_suoxie_token(
+    client: &reqwest::Client,
+    refresh_token: &str,
+) -> Result<SuoxieTokens, String> {
+    let rt = refresh_token.trim().trim_start_matches("Bearer ").trim();
+    if rt.is_empty() {
+        return Err("没有 refresh_token".to_string());
+    }
+    let (status, text) = apilog::send(
+        "suoxie-refresh",
+        client
+            .post(SUOXIE_REFRESH_URL)
+            .json(&json!({ "refresh_token": rt }))
+            .timeout(Duration::from_secs(20)),
+    )
+    .await?;
+    if !(200..300).contains(&status) {
+        return Err(format!("HTTP {status}"));
+    }
+    let body: Value = serde_json::from_str(&text).map_err(|e| format!("响应非 JSON: {e}"))?;
+    if body.get("code").and_then(|v| v.as_i64()) != Some(0) {
+        let msg = body
+            .get("message")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+        return Err(format!("续期被拒: {msg}"));
+    }
+    let data = body.get("data").ok_or("auth/refresh 结构异常")?;
+    let token = data
+        .get("access_token")
+        .or_else(|| data.get("token"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .ok_or("auth/refresh 未返回 access_token")?;
+    if !token_valid(&token, Duration::from_secs(60)) {
+        return Err("auth/refresh 返回的令牌仍然无效".to_string());
+    }
+    let next_refresh = data
+        .get("refresh_token")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    Ok(SuoxieTokens {
+        token,
+        refresh_token: next_refresh,
+    })
+}
+
+/// 读页面 localStorage 的梭子蟹凭据，只认固定键 auth_token / refresh_token。
+/// 旧实现把整个 storage 扫一遍找「像 JWT 的串」，会把已经过期的 auth_token 或
+/// auth_user 里的旧串当新凭据返回——那次连错三天的根因就在这。
+async fn read_suoxie_storage(ws_url: &str) -> Option<(Option<String>, Option<String>)> {
     use futures_util::{SinkExt, StreamExt};
     use tokio_tungstenite::connect_async;
     use tokio_tungstenite::tungstenite::Message;
@@ -566,7 +715,7 @@ async fn read_suoxie_storage_token(ws_url: &str) -> Option<String> {
             "method": "Runtime.evaluate",
             "params": {
                 "returnByValue": true,
-                "expression": "JSON.stringify(Object.assign({}, localStorage, sessionStorage))"
+                "expression": "JSON.stringify({t: localStorage.getItem('auth_token'), r: localStorage.getItem('refresh_token')})"
             }
         })
         .to_string()
@@ -590,63 +739,212 @@ async fn read_suoxie_storage_token(ws_url: &str) -> Option<String> {
             .pointer("/result/result/value")
             .and_then(|v| v.as_str())?;
         let storage: Value = serde_json::from_str(raw).ok()?;
-        fn find_jwt(value: &Value) -> Option<String> {
-            if let Some(raw) = value.as_str() {
-                let token = raw
-                    .trim()
-                    .strip_prefix("Bearer ")
-                    .unwrap_or(raw.trim())
-                    .trim();
-                if token.split('.').count() == 3 && token.len() > 30 {
-                    return Some(token.to_string());
-                }
-                if let Ok(nested) = serde_json::from_str::<Value>(token) {
-                    if let Some(found) = find_jwt(&nested) {
-                        return Some(found);
-                    }
-                }
-            }
-            match value {
-                Value::Array(items) => items.iter().find_map(find_jwt),
-                Value::Object(items) => items.values().find_map(find_jwt),
-                _ => None,
-            }
-        }
-        if let Some(token) = find_jwt(&storage) {
-            return Some(token);
-        }
-        return None;
+        let pick = |k: &str| {
+            storage
+                .get(k)
+                .and_then(|v| v.as_str())
+                .map(|s| s.trim().trim_start_matches("Bearer ").trim().to_string())
+                .filter(|s| !s.is_empty())
+        };
+        return Some((pick("t"), pick("r")));
     }
     None
 }
 
+/// 把续期后的新令牌写回页面 localStorage：页面自己的 axios 也用这份
+/// refresh_token，不同步的话它下次 401 会拿旧令牌刷新，反而把自己踢下线。
+async fn write_suoxie_storage(ws_url: &str, tokens: &SuoxieTokens) -> bool {
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::connect_async;
+    use tokio_tungstenite::tungstenite::Message;
+
+    let Ok((mut ws, _)) = connect_async(ws_url).await else {
+        return false;
+    };
+    let token_js = serde_json::to_string(&tokens.token).unwrap_or_default();
+    let refresh_js = tokens
+        .refresh_token
+        .as_ref()
+        .map(|r| {
+            format!(
+                "localStorage.setItem('refresh_token', {});",
+                serde_json::to_string(r).unwrap_or_default()
+            )
+        })
+        .unwrap_or_default();
+    let exp_ms = jwt_exp(&tokens.token).map(|e| e * 1000).unwrap_or(0);
+    let expr = format!(
+        "localStorage.setItem('auth_token', {token_js}); {refresh_js} localStorage.setItem('token_expires_at', '{exp_ms}'); true"
+    );
+    let ok = ws
+        .send(Message::Text(
+            json!({
+                "id": 1,
+                "method": "Runtime.evaluate",
+                "params": { "returnByValue": true, "expression": expr }
+            })
+            .to_string()
+            .into(),
+        ))
+        .await
+        .is_ok();
+    if ok {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while Instant::now() < deadline {
+            let Ok(Some(Ok(msg))) =
+                tokio::time::timeout(Duration::from_millis(500), ws.next()).await
+            else {
+                continue;
+            };
+            if let Message::Text(t) = msg {
+                if let Ok(v) = serde_json::from_str::<Value>(&t) {
+                    if v.get("id").and_then(|i| i.as_u64()) == Some(1) {
+                        return v.get("error").is_none();
+                    }
+                }
+            }
+        }
+    }
+    false
+}
+
+/// 让页面自己刷新一次：前端 axios 收到 401 会用 refresh_token 换新并回写
+/// localStorage，所以 reload 是不依赖接口细节的续期兜底。
+async fn cdp_reload(ws_url: &str) -> bool {
+    use futures_util::SinkExt;
+    use tokio_tungstenite::connect_async;
+    use tokio_tungstenite::tungstenite::Message;
+
+    let Ok((mut ws, _)) = connect_async(ws_url).await else {
+        return false;
+    };
+    let ok = ws
+        .send(Message::Text(
+            json!({ "id": 1, "method": "Page.enable", "params": {} })
+                .to_string()
+                .into(),
+        ))
+        .await
+        .is_ok()
+        && ws
+            .send(Message::Text(
+                json!({ "id": 2, "method": "Page.reload", "params": { "ignoreCache": false } })
+                    .to_string()
+                    .into(),
+            ))
+            .await
+            .is_ok();
+    let _ = ws.close(None).await;
+    ok
+}
+
+/// 从已打开的页面拿「现在就能用」的令牌：先读 storage（有效直接用），
+/// 过期就用 refresh_token 换；都没有/都失败才 reload 让 SPA 自己换后再读。
+async fn suoxie_tokens_from_page(client: &reqwest::Client, ws: &str) -> Option<SuoxieTokens> {
+    if let Some((auth, refresh)) = read_suoxie_storage(ws).await {
+        if let Some(a) = auth.filter(|a| token_valid(a, REFRESH_MARGIN)) {
+            return Some(SuoxieTokens {
+                token: a,
+                refresh_token: refresh,
+            });
+        }
+        if let Some(rt) = refresh {
+            if let Ok(t) = refresh_suoxie_token(client, &rt).await {
+                write_suoxie_storage(ws, &t).await;
+                return Some(t);
+            }
+        }
+    }
+    if !cdp_reload(ws).await {
+        return None;
+    }
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(900)).await;
+        if let Some((auth, refresh)) = read_suoxie_storage(ws).await {
+            if let Some(a) = auth.filter(|a| token_valid(a, REFRESH_MARGIN)) {
+                return Some(SuoxieTokens {
+                    token: a,
+                    refresh_token: refresh,
+                });
+            }
+            if let Some(rt) = refresh {
+                if let Ok(t) = refresh_suoxie_token(client, &rt).await {
+                    return Some(t);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// 后台静默续期：只用已保存的 refresh_token 或已开着的调试浏览器，
+/// **绝不拉起新窗口**（后台弹窗会卡住余额刷新，还得等人登录）。
+pub async fn refresh_suoxie_quiet(
+    client: &reqwest::Client,
+    refresh_token: Option<&str>,
+    attach: Option<u16>,
+) -> Result<SuoxieTokens, String> {
+    if let Some(rt) = refresh_token.filter(|s| !s.trim().is_empty()) {
+        match refresh_suoxie_token(client, rt).await {
+            Ok(t) => {
+                // 顺手同步回已打开的页面，避免它拿旧 refresh_token 把自己踢下线
+                if let Some(port) = attach {
+                    if let Some(ws) = try_find_page(client, port, "suoxie.codes").await {
+                        write_suoxie_storage(&ws, &t).await;
+                    }
+                }
+                return Ok(t);
+            }
+            Err(e) => eprintln!("[suoxie] refresh_token 续期失败: {e}"),
+        }
+    }
+    if let Some(port) = attach {
+        if let Some(ws) = find_or_open_page(client, port, "suoxie.codes", SUOXIE_DASHBOARD).await {
+            if let Some(t) = suoxie_tokens_from_page(client, &ws).await {
+                return Ok(t);
+            }
+        }
+    }
+    Err("梭子蟹凭据已失效，需要重新登录（点击鲸鱼更新）".to_string())
+}
+
 /// 梭子蟹（suoxie.codes）：attach=Some(端口) 时优先附加常驻调试 Edge（复用登录态），
 /// 不可用/抓取失败再回退拉起新浏览器登录。
-pub async fn capture_suoxie_token(attach: Option<u16>) -> Result<String, String> {
+///
+/// 只有**用户点了鲸鱼/设置页按钮**才会走到这里（后台续期走 refresh_suoxie_quiet）。
+/// 返回的令牌一定校验过 exp，绝不会把页面里的过期 JWT 当成功结果。
+pub async fn capture_suoxie_token(attach: Option<u16>) -> Result<SuoxieTokens, String> {
     let client = reqwest::Client::new();
     // 1. 附加常驻调试浏览器
     if let Some(port) = attach {
         let attached_browser = cdp_reachable(&client, port).await;
         if let Some(ws) = find_or_open_page(&client, port, "suoxie.codes", SUOXIE_DASHBOARD).await {
-            if let Some(token) = read_suoxie_storage_token(&ws).await {
-                return Ok(token);
+            if let Some(t) = suoxie_tokens_from_page(&client, &ws).await {
+                return Ok(t);
             }
-        }
-        if let Some(t) = attach_sniff_auth(
-            &client,
-            port,
-            "suoxie.codes",
-            SUOXIE_DASHBOARD,
-            &["suoxie.codes/api/v1/"],
-            "suoxie",
-        )
-        .await
-        {
-            return Ok(t);
+            // 页面里没有可用令牌：再嗅一次请求头（某些版本令牌只出现在 Authorization）
+            if let Some(tok) = sniff_auth_header(
+                &ws,
+                Instant::now() + Duration::from_secs(45),
+                &["suoxie.codes/api/v1/"],
+                true,
+                "请确保常驻调试浏览器里已登录该站点",
+            )
+            .await
+            .ok()
+            .filter(|t| token_valid(t, Duration::from_secs(60)))
+            {
+                let refresh = read_suoxie_storage(&ws).await.and_then(|(_, r)| r);
+                return Ok(SuoxieTokens {
+                    token: tok,
+                    refresh_token: refresh,
+                });
+            }
         }
         if attached_browser {
             return Err(
-                "已连接调试浏览器，但梭子蟹未发现登录凭证；请在该 Edge 中完成登录后重试"
+                "已连接调试浏览器，但梭子蟹未发现可用登录凭证；请在该 Edge 中重新登录 suoxie.codes 后重试"
                     .to_string(),
             );
         }
@@ -676,10 +974,19 @@ pub async fn capture_suoxie_token(attach: Option<u16>) -> Result<String, String>
         "请在打开的浏览器里登录 suoxie.codes（4 分钟）",
     )
     .await;
+    // 顺手把 refresh_token 一起带回去：以后 JWT 到期就不用再开浏览器了
+    let refresh = read_suoxie_storage(&page_ws).await.and_then(|(_, r)| r);
     let _ = child.kill();
     let _ = child.wait();
     let _ = std::fs::remove_dir_all(&dir);
-    r
+    let token = r?;
+    if !token_valid(&token, Duration::from_secs(60)) {
+        return Err("抓到的梭子蟹令牌已过期，请重新登录".to_string());
+    }
+    Ok(SuoxieTokens {
+        token,
+        refresh_token: refresh,
+    })
 }
 
 fn extract_authorization(headers: &Value) -> Option<String> {
@@ -737,6 +1044,55 @@ mod tests {
         assert_eq!(jwt.split('.').count(), 3);
         assert!(jwt.len() > 30);
         assert!("short".len() <= 30);
+    }
+
+    #[test]
+    fn jwt_exp_decoded_from_payload() {
+        // {"exp":1700000000} 的 base64url
+        let tok = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJleHAiOjE3MDAwMDAwMDB9.sig";
+        assert_eq!(jwt_exp(tok), Some(1_700_000_000));
+        assert_eq!(jwt_exp(&format!("Bearer {tok}")), Some(1_700_000_000));
+        // 非 JWT / 坏 payload / 无 exp
+        assert!(jwt_exp("not-a-jwt").is_none());
+        assert!(jwt_exp("a.!!!.c").is_none());
+        assert!(jwt_exp("a.eyJ4IjoxfQ.c").is_none());
+    }
+
+    #[test]
+    fn token_valid_honours_exp_margin() {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        let mk = |exp: i64| {
+            let payload = base64url(format!("{{\"exp\":{exp}}}").as_bytes());
+            format!("h.{payload}.s")
+        };
+        assert!(token_valid(&mk(now + 3600), REFRESH_MARGIN));
+        // 10 分钟以内到期 → 视为需要续期
+        assert!(!token_valid(&mk(now + 60), REFRESH_MARGIN));
+        assert!(!token_valid(&mk(now - 10), REFRESH_MARGIN));
+        // 解不出 exp → 保守放行，交给接口 401 兜底
+        assert!(token_valid("opaque-token", REFRESH_MARGIN));
+    }
+
+    /// 测试辅助：标准 base64url（无填充）编码。
+    fn base64url(bytes: &[u8]) -> String {
+        const T: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+        let mut out = String::new();
+        for c in bytes.chunks(3) {
+            let b = [c[0], *c.get(1).unwrap_or(&0), *c.get(2).unwrap_or(&0)];
+            let n = ((b[0] as u32) << 16) | ((b[1] as u32) << 8) | b[2] as u32;
+            out.push(T[(n >> 18) as usize & 63] as char);
+            out.push(T[(n >> 12) as usize & 63] as char);
+            if c.len() > 1 {
+                out.push(T[(n >> 6) as usize & 63] as char);
+            }
+            if c.len() > 2 {
+                out.push(T[n as usize & 63] as char);
+            }
+        }
+        out
     }
 
     #[test]
