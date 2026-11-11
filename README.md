@@ -57,7 +57,7 @@ cd desktop
 # 在线更新的产物需签名（CI 用 GitHub secrets，本地构建手动注入私钥）
 $env:TAURI_SIGNING_PRIVATE_KEY = Get-Content "$env:USERPROFILE\.tauri\deepwhale.key" -Raw
 $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = '你的私钥密码'   # 没设密码则留空字符串
-npm run tauri build   # 产出 Windows 安装包（.msi/.exe/.nsis.zip + latest.json）
+npm run tauri build   # 产出 Windows 安装包（NSIS .exe + 更新包 + latest.json）
 ```
 
 产物位于 `desktop/src-tauri/target/release/bundle/`。
