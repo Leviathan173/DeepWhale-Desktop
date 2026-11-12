@@ -1,8 +1,8 @@
 //! DeepSeek 价目换算：从 OLD lib/index.js 直译。
 //! 高峰时段：工作日 9:00–12:00 和 14:00–18:00（北京时间）。
 //! 周末（北京周六/周日）全天低谷价：2026-08-23（周日）起官方新政策，不再区分峰谷。
-//! ponytail: 价格表按官方价目硬编码（2025 年），改价需同步更新；若定价漂移会导致
-//! token 实时用量模式的费用/余额换算不准。记账模式不受影响。
+//! ponytail: 价格表按官方价目硬编码（2026-11），改价需同步更新；若定价漂移会导致
+//! 本地记账模式（小鲸鱼记账）的费用换算不准。实时·令牌模式走平台 cost 接口，不受影响。
 use serde_json::Value;
 
 pub const PEAK_HOURS: [[i32; 2]; 2] = [[9, 12], [14, 18]];
@@ -11,34 +11,35 @@ pub const PEAK_HOURS: [[i32; 2]; 2] = [[9, 12], [14, 18]];
 pub const WEEKEND_VALLEY_START: i64 = 1_787_414_400;
 
 /// CNY 每百万 token 价格：[空闲时段价, 高峰时段价]
-/// （deepseek-chat/v4-flash/v4-pro/reasoner 目前共享；分模型定价后再拆。）
 pub struct Prices {
     pub hit: [f64; 2],
     pub miss: [f64; 2],
     pub out: [f64; 2],
 }
 
-const BASE_PRICE: Prices = Prices {
-    hit: [0.05, 0.1],
-    miss: [1.5, 3.0],
-    out: [4.5, 9.0],
+/// deepseek-flash（DeepSeek-V4.1-Flash-1017）官方价目。
+/// 旧名 deepseek-chat / deepseek-reasoner / deepseek-v4-flash 均已下线并指向
+/// Flash（chat=非思考、reasoner=思考），按 Flash 价计费。
+const FLASH_PRICE: Prices = Prices {
+    hit: [0.02, 0.04],
+    miss: [1.0, 2.0],
+    out: [4.0, 8.0],
 };
 
-const MODELS: [&str; 4] = [
-    "deepseek-chat",
-    "deepseek-reasoner",
-    "deepseek-v4-flash",
-    "deepseek-v4-pro",
-];
+/// deepseek-v4-pro（DeepSeek-V4-Pro-0813）官方价目。
+const PRO_PRICE: Prices = Prices {
+    hit: [0.15, 0.30],
+    miss: [4.5, 9.0],
+    out: [13.5, 27.0],
+};
 
 pub fn price_for(model: &str) -> &'static Prices {
     let m = model.to_ascii_lowercase();
-    for key in MODELS {
-        if m.contains(key) {
-            return &BASE_PRICE;
-        }
+    if m.contains("pro") {
+        &PRO_PRICE
+    } else {
+        &FLASH_PRICE
     }
-    &BASE_PRICE
 }
 
 /// Anthropic 官方模型 USD 单价（每百万 token）。Claude Code 走官方直连时用；
@@ -140,6 +141,12 @@ fn num(v: &Value) -> f64 {
 
 fn token_of(usage: &Value, key: &str) -> f64 {
     num(usage.get(key).unwrap_or(&Value::Null))
+}
+
+/// cost 接口的 cost 字段是数字字符串（"0.4494198000000000"），兼容 JSON number。
+fn cost_of(v: &Value) -> Option<f64> {
+    v.as_f64()
+        .or_else(|| v.as_str().and_then(|s| s.trim().parse::<f64>().ok()))
 }
 
 /// 本地记账的单位价（CNY/百万 token，[空闲, 高峰] 两档）。
@@ -371,6 +378,50 @@ pub fn compute_today_usage(data: &Value) -> Option<(f64, f64)> {
     }
 }
 
+/// 平台 cost 接口响应 → 今日费用（元）。与 amount 接口不同：费用直接在
+/// `data.biz_data.data[].series[].buckets[].cost`（字符串），另有 function_series
+/// （搜索/抓取按次计费）。只累加 CNY 条目，与页面「消费金额」口径一致。
+pub fn compute_today_cost(data: &Value) -> Option<f64> {
+    let biz = data.get("data")?.get("biz_data")?;
+    let arr = biz.get("data")?.as_array()?;
+    let mut cost = 0.0;
+    let mut found = false;
+    for entry in arr {
+        let currency = entry
+            .get("currency")
+            .and_then(|v| v.as_str())
+            .unwrap_or("CNY");
+        if currency != "CNY" {
+            continue;
+        }
+        for key in ["series", "function_series"] {
+            for s in entry
+                .get(key)
+                .and_then(|v| v.as_array())
+                .into_iter()
+                .flatten()
+            {
+                for b in s
+                    .get("buckets")
+                    .and_then(|v| v.as_array())
+                    .into_iter()
+                    .flatten()
+                {
+                    if let Some(c) = b.get("cost").and_then(cost_of) {
+                        cost += c;
+                        found = true;
+                    }
+                }
+            }
+        }
+    }
+    if found {
+        Some(cost)
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -444,9 +495,91 @@ mod tests {
             }
         });
         let (cost, tokens) = compute_today_usage(&json).unwrap();
-        // 空闲 0.05/百万 → 1M hit = 0.05 元
-        assert!((cost - 0.05).abs() < 1e-9);
+        // 空闲 0.02/百万 → 1M hit = 0.02 元
+        assert!((cost - 0.02).abs() < 1e-9);
         assert!((tokens - 1_000_000.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn compute_usage_pro_price() {
+        // deepseek-v4-pro 单独定价：高峰 hit 0.30/百万。
+        let json = serde_json::json!({
+            "data": {
+                "biz_data": {
+                    "series": [{
+                        "model": "deepseek-v4-pro",
+                        "buckets": [{
+                            "time": ts(1, 0), // 北京 9:00，高峰
+                            "usage": {
+                                "PROMPT_CACHE_HIT_TOKEN": 1000000,
+                                "PROMPT_CACHE_MISS_TOKEN": 0,
+                                "RESPONSE_TOKEN": 0
+                            }
+                        }]
+                    }]
+                }
+            }
+        });
+        let (cost, _) = compute_today_usage(&json).unwrap();
+        assert!((cost - 0.30).abs() < 1e-9);
+    }
+
+    #[test]
+    fn compute_today_cost_sums_cny_series_and_functions() {
+        // 实测 cost 接口结构：data.biz_data.data[] 下 series + function_series，
+        // cost 为字符串；多币种时只取 CNY。
+        let json = serde_json::json!({
+            "data": {
+                "biz_data": {
+                    "data": [
+                        {
+                            "currency": "CNY",
+                            "series": [
+                                {
+                                    "api_key": { "name": "claw" },
+                                    "model": "deepseek-flash",
+                                    "buckets": [
+                                        { "time": ts(15, 0), "cost": "0.5" },
+                                        { "time": ts(16, 0), "cost": "0.25" }
+                                    ]
+                                },
+                                {
+                                    "api_key": { "name": "ai专班" },
+                                    "model": "deepseek-flash",
+                                    "buckets": [ { "time": ts(15, 0), "cost": "10.0" } ]
+                                }
+                            ],
+                            "function_series": [
+                                {
+                                    "api_key": { "name": "ai专班" },
+                                    "model": "server-tool-search",
+                                    "buckets": [ { "time": ts(15, 0), "cost": "0.05" } ]
+                                }
+                            ]
+                        },
+                        {
+                            "currency": "USD",
+                            "series": [
+                                {
+                                    "api_key": { "name": "claw" },
+                                    "model": "deepseek-flash",
+                                    "buckets": [ { "time": ts(15, 0), "cost": "999" } ]
+                                }
+                            ]
+                        }
+                    ]
+                }
+            }
+        });
+        let cost = compute_today_cost(&json).unwrap();
+        assert!((cost - 10.8).abs() < 1e-9);
+        // 无 CNY 数据 → None
+        assert!(compute_today_cost(&serde_json::json!({
+            "data": { "biz_data": { "data": [
+                { "currency": "USD", "series": [ { "buckets": [ { "cost": "1" } ] } ] }
+            ] } }
+        }))
+        .is_none());
     }
 
     #[test]
@@ -466,7 +599,7 @@ mod tests {
         // 无 providerID 且泛化 pattern "deepseek" 不再精确匹配 "deepseek-v4-flash-0731"
         // → 落到内置兜底（而非被套餐排除）。
         let u = resolve_unit(&plan, "deepseek-v4-flash-0731", None).unwrap();
-        assert!((u.miss[0] - 1.5).abs() < 1e-9);
+        assert!((u.miss[0] - 1.0).abs() < 1e-9);
 
         let metric = vec![ProviderCfg {
             name: "longcat".into(),
@@ -503,7 +636,7 @@ mod tests {
         assert!((u.miss[0] - 0.3).abs() < 1e-9);
         assert!((u.miss[1] - 0.8).abs() < 1e-9);
         // output 未填 → 内置高峰档
-        assert!((u.out[1] - 9.0).abs() < 1e-9);
+        assert!((u.out[1] - 8.0).abs() < 1e-9);
 
         // 只填 input 时，其余类别回退内置价目。
         let metric = vec![ProviderCfg {
@@ -522,7 +655,7 @@ mod tests {
 
         // 未配置的 deepseek 兜底走内置价目。
         let u = resolve_unit(&[], "deepseek-v4-flash", None).unwrap();
-        assert!((u.miss[0] - 1.5).abs() < 1e-9);
+        assert!((u.miss[0] - 1.0).abs() < 1e-9);
         // 完全未知模型不计。
         assert!(resolve_unit(&[], "gpt-4o-x", None).is_none());
     }

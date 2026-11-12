@@ -199,7 +199,7 @@ mod tests {
         // 默认表含 claude 套餐提供器 → 全部不计金额。
         assert!(today_cost(Some(&dir), &crate::pricing::default_providers()).is_none());
 
-        // claude 按量 + 精确模型名：deepseek 走内置价（平档 1.5），longcat-2.0 0.5 元/百万。
+        // claude 按量 + 精确模型名：deepseek 走内置价（平档 1.0），longcat-2.0 0.5 元/百万。
         let providers = vec![ProviderCfg {
             name: "claude".into(),
             metric: true,
@@ -220,11 +220,11 @@ mod tests {
             ],
         }];
         let (cost, _) = today_cost(Some(&dir), &providers).unwrap();
-        let expect = 1_000_000.0 / 1e6 * 1.5 + 2_000_000.0 / 1e6 * 0.5;
+        let expect = 1_000_000.0 / 1e6 * 1.0 + 2_000_000.0 / 1e6 * 0.5;
         assert!((cost - expect).abs() < 1e-9, "cost {cost} expect {expect}");
 
         // 泛化 pattern "deepseek" 精确不命中 "deepseek-v4-flash"：
-        // deepseek 兜底内置价 1.5，LongCat 未列出 → 0 元但 token 仍统计。
+        // deepseek 兜底内置价 1.0，LongCat 未列出 → 0 元但 token 仍统计。
         let providers = vec![ProviderCfg {
             name: "claude".into(),
             metric: true,
@@ -235,7 +235,7 @@ mod tests {
             }],
         }];
         let (cost, tokens) = today_cost(Some(&dir), &providers).unwrap();
-        assert!((cost - 1_000_000.0 / 1e6 * 1.5).abs() < 1e-9, "cost {cost}");
+        assert!((cost - 1_000_000.0 / 1e6 * 1.0).abs() < 1e-9, "cost {cost}");
         assert!((tokens - 3_000_000.0).abs() < 1.0);
 
         // claude 套餐（metric=false）→ 无金额。

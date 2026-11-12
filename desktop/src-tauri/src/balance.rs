@@ -8,6 +8,8 @@ use serde_json::{json, Value};
 
 pub const BALANCE_URL: &str = "https://api.deepseek.com/user/balance";
 pub const USAGE_URL_BASE: &str = "https://platform.deepseek.com/api/v0/usage/by_api_key/amount";
+/// 平台「消费金额」同源接口：直接给今日费用，不像 amount 接口要给 token 自己乘价目。
+pub const USAGE_COST_URL_BASE: &str = "https://platform.deepseek.com/api/v0/usage/by_api_key/cost";
 pub const BALANCE_TTL_MS: u128 = 25_000;
 
 pub const BAILIAN_API_URL: &str = "https://bailian-cs.console.aliyun.com/data/api.json";
@@ -84,19 +86,16 @@ async fn fetch_balance(client: &reqwest::Client, api_key: &str) -> Result<(f64, 
     Ok((total, currency))
 }
 
-/// 令牌实时用量模式：今日费用（元）。
-async fn fetch_today_usage(client: &reqwest::Client, platform_token: &str) -> Result<f64, String> {
-    let now = time::OffsetDateTime::now_local().map_err(|e| e.to_string())?;
-    let midnight = now.replace_time(time::Time::MIDNIGHT);
-    let start = midnight.unix_timestamp();
-    let end = start + 86400;
-    let tz = now.offset().whole_seconds();
-    let url = format!("{USAGE_URL_BASE}?start={start}&end={end}&tz={tz}");
-
+/// 平台用量接口的通用 GET：cost / amount 共用，返回解析后的 JSON。
+async fn fetch_platform_usage(
+    client: &reqwest::Client,
+    platform_token: &str,
+    url: &str,
+) -> Result<Value, String> {
     let (status, text) = apilog::send(
         "platform",
         client
-            .get(&url)
+            .get(url)
             .header(
                 "Authorization",
                 format!(
@@ -120,6 +119,37 @@ async fn fetch_today_usage(client: &reqwest::Client, platform_token: &str) -> Re
             return Err(format!("platform code {code}: {msg}"));
         }
     }
+    Ok(data)
+}
+
+/// 令牌实时用量模式：今日费用（元）。
+/// 优先平台 cost 接口（与页面「消费金额」同源，不受本地价目漂移影响）；
+/// 失败回退 amount 接口按本地价目重算。
+async fn fetch_today_usage(client: &reqwest::Client, platform_token: &str) -> Result<f64, String> {
+    let now = time::OffsetDateTime::now_local().map_err(|e| e.to_string())?;
+    let midnight = now.replace_time(time::Time::MIDNIGHT);
+    let start = midnight.unix_timestamp();
+    let end = start + 86400;
+    let tz = now.offset().whole_seconds();
+
+    let cost_url = format!("{USAGE_COST_URL_BASE}?start={start}&end={end}&tz={tz}");
+    match fetch_platform_usage(client, platform_token, &cost_url).await {
+        Ok(data) => {
+            if let Some(cost) = pricing::compute_today_cost(&data) {
+                return Ok(cost);
+            }
+        }
+        Err(e) => {
+            // 令牌失效时 amount 接口同样不会通，直接抛出触发续期，别白跑一趟。
+            if platform_auth_error(&e) {
+                return Err(e);
+            }
+            eprintln!("[balance] 平台 cost 接口失败，回退 amount: {e}");
+        }
+    }
+
+    let amount_url = format!("{USAGE_URL_BASE}?start={start}&end={end}&tz={tz}");
+    let data = fetch_platform_usage(client, platform_token, &amount_url).await?;
     pricing::compute_today_usage(&data)
         .map(|(cost, _)| cost)
         .ok_or_else(|| "no usage".to_string())

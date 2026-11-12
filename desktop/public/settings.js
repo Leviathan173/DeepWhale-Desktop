@@ -435,7 +435,7 @@
     var tdPat = document.createElement('td')
     var pat = document.createElement('input')
     pat.type = 'text'
-    pat.placeholder = '模型全名，如 deepseek-v4-flash'
+    pat.placeholder = '模型全名，如 deepseek-flash'
     if (m && m.pattern) pat.value = m.pattern
     tdPat.appendChild(pat)
     tdPat.rowSpan = peak ? 2 : 1
