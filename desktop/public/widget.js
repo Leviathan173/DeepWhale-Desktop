@@ -27,6 +27,9 @@ function apiMoveWindow(x, y) { return WHALE.invoke('move_window', { x: x, y: y }
 function apiSetWindowBounds(x, y, width, height) {
   return WHALE.invoke('set_window_bounds', { x: x, y: y, width: width, height: height })
 }
+function apiSetWidgetVisible(visible) {
+  return WHALE.invoke('set_widget_visible', { visible: visible })
+}
 var IMG_DATA_URL = null
 var IMG_URL = null
 var SOUND_URLS = { duck: { press: null, release: null }, fx1: { press: null, release: null }, whale: { press: null, release: null } }
@@ -220,6 +223,17 @@ setBtn.addEventListener('click', function () {
   WHALE.invoke('open_settings').catch(function () {})
 })
 rowSet.appendChild(setBtn)
+var rowHide = menuRow()
+var hideBtn = document.createElement('button')
+hideBtn.type = 'button'
+hideBtn.className = 'dshwv-hidebtn'
+hideBtn.textContent = '隐藏到托盘'
+hideBtn.title = '隐藏鲸鱼小窗，只在任务栏托盘保留图标（单击托盘图标或托盘菜单可恢复）'
+hideBtn.addEventListener('click', function () {
+  closeMenu()
+  apiSetWidgetVisible(false).catch(function () {})
+})
+rowHide.appendChild(hideBtn)
 menuBox.appendChild(row1)
 menuBox.appendChild(row2)
 menuBox.appendChild(row3)
@@ -227,6 +241,7 @@ menuBox.appendChild(row4)
 menuBox.appendChild(rowAppearance)
 menuBox.appendChild(rowDnd)
 menuBox.appendChild(rowSet)
+menuBox.appendChild(rowHide)
 
 var textBox = document.createElement('div')
 textBox.className = 'dshwv-text'

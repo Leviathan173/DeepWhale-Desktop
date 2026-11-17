@@ -15,10 +15,16 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 use tauri::menu::{ContextMenu, Menu, MenuItem};
-use tauri::tray::TrayIconBuilder;
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{Emitter, Manager};
 
 use app_state::AppState;
+
+/// 托盘/右键菜单里的「隐藏/显示小鲸鱼」项：切换后同步两处文字。
+struct VisibilityMenuItems {
+    tray: MenuItem<tauri::Wry>,
+    popup: MenuItem<tauri::Wry>,
+}
 
 fn main() {
     tauri::Builder::default()
@@ -47,9 +53,14 @@ fn main() {
             });
 
             create_main_window(app)?;
-            // 右键鲸鱼弹的原生菜单：与托盘同一套三项，独立 id 前缀，见 handle_menu_event
-            app.manage(build_app_menu(app.handle(), "popup_")?);
-            create_tray(app)?;
+            // 右键鲸鱼弹的原生菜单：与托盘同一套菜单项，独立 id 前缀，见 handle_menu_event
+            let (popup_menu, popup_visibility) = build_app_menu(app.handle(), "popup_")?;
+            app.manage(popup_menu);
+            let tray_visibility = create_tray(app)?;
+            app.manage(VisibilityMenuItems {
+                tray: tray_visibility,
+                popup: popup_visibility,
+            });
             // 梭子蟹每日福利（签到+抽奖）后台循环：凭据不全/开关关闭时循环体空转。
             tauri::async_runtime::spawn(welfare::daily_loop(app.handle().clone()));
             Ok(())
@@ -80,6 +91,7 @@ fn main() {
             screen_size,
             move_window,
             set_window_bounds,
+            set_widget_visible,
             set_click_through,
             cursor_pos,
             popup_app_menu,
@@ -124,6 +136,7 @@ fn create_main_window(app: &mut tauri::App) -> tauri::Result<()> {
         .focused(false)
         .inner_size(base, base)
         .position(sw - base, sh - base)
+        .visible(!cfg.hide_widget)
         .build()?;
     Ok(())
 }
@@ -149,10 +162,10 @@ fn screen_logical(app: &tauri::App) -> tauri::Result<(f64, f64)> {
     }
 }
 
-/// 托盘/鲸鱼右键共用的菜单动作（设置/检查更新/退出）。
-/// 托盘菜单用裸 id，右键弹出菜单用 `popup_` 前缀 id：两条派发通道
-/// （托盘 on_menu_event / RunEvent::MenuEvent）无论是否双发，各自只匹配
-/// 自己前缀的 id，一次点击只执行一次。
+/// 托盘/鲸鱼右键共用的菜单动作（隐藏/显示、设置、检查更新、退出）。
+/// 托盘菜单用裸 id，右键弹出菜单用 `popup_` 前缀 id。麻烦点是 Tauri 的托盘
+/// on_menu_event 是全局监听器，两种菜单的事件都会进；RunEvent::MenuEvent 也会进。
+/// 因此两条通道各按前缀过滤（托盘通道在 create_tray 里丢弃 popup_），一次点击只执行一次。
 fn handle_menu_event(app: &tauri::AppHandle, id: &str) {
     match id {
         "quit" | "popup_quit" => app.exit(0),
@@ -187,11 +200,44 @@ fn handle_menu_event(app: &tauri::AppHandle, id: &str) {
                 }
             });
         }
+        // 隐藏/显示鲸鱼小窗（隐藏后只在托盘留图标，配置持久化，重启仍保持）
+        "visibility" | "popup_visibility" => {
+            let visible = app
+                .get_webview_window("main")
+                .and_then(|w| w.is_visible().ok())
+                .unwrap_or(true);
+            if let Err(e) = apply_widget_visibility(app, !visible) {
+                eprintln!("toggle widget visibility failed: {e}");
+            }
+        }
         _ => {}
     }
 }
 
-fn build_app_menu(handle: &tauri::AppHandle, prefix: &str) -> tauri::Result<Menu<tauri::Wry>> {
+fn visibility_label(hidden: bool) -> &'static str {
+    if hidden {
+        "显示小鲸鱼"
+    } else {
+        "隐藏小鲸鱼"
+    }
+}
+
+fn build_app_menu(
+    handle: &tauri::AppHandle,
+    prefix: &str,
+) -> tauri::Result<(Menu<tauri::Wry>, MenuItem<tauri::Wry>)> {
+    let hidden = {
+        let st = handle.state::<AppState>();
+        let _g = st.cfg.lock().unwrap_or_else(|e| e.into_inner());
+        config::read(&st.dir).hide_widget
+    };
+    let visibility = MenuItem::with_id(
+        handle,
+        format!("{prefix}visibility"),
+        visibility_label(hidden),
+        true,
+        None::<&str>,
+    )?;
     let settings = MenuItem::with_id(
         handle,
         format!("{prefix}settings"),
@@ -214,12 +260,17 @@ fn build_app_menu(handle: &tauri::AppHandle, prefix: &str) -> tauri::Result<Menu
         None::<&str>,
     )?;
     let quit = MenuItem::with_id(handle, format!("{prefix}quit"), "退出", true, None::<&str>)?;
-    Menu::with_items(handle, &[&settings, &credentials, &update, &quit])
+    let menu = Menu::with_items(
+        handle,
+        &[&visibility, &settings, &credentials, &update, &quit],
+    )?;
+    Ok((menu, visibility))
 }
 
-/// 托盘：设置 / 检查更新 / 退出。
-fn create_tray(app: &mut tauri::App) -> tauri::Result<()> {
-    let menu = build_app_menu(app.handle(), "")?;
+/// 托盘：隐藏/显示小鲸鱼 / 设置 / 检查更新 / 退出。
+/// 左键单击托盘图标：鲸鱼被隐藏时重新显示（与菜单项同一实现）。
+fn create_tray(app: &mut tauri::App) -> tauri::Result<MenuItem<tauri::Wry>> {
+    let (menu, visibility) = build_app_menu(app.handle(), "")?;
 
     TrayIconBuilder::with_id("main")
         .icon(
@@ -230,9 +281,60 @@ fn create_tray(app: &mut tauri::App) -> tauri::Result<()> {
         .tooltip("小鲸鱼余额")
         .menu(&menu)
         .show_menu_on_left_click(false)
-        .on_menu_event(|app, event| handle_menu_event(app, event.id().as_ref()))
-        .build(app)
-        .map(|_| ())
+        // 注意：Tauri 的 tray on_menu_event 是**全局**菜单监听器，右键弹出菜单的事件
+        // 也会经过这里；右键菜单由 RunEvent::MenuEvent 统一处理。这里必须忽略
+        // popup_ 前缀，否则一次点击执行两遍（隐藏后立刻又显示回来）。
+        .on_menu_event(|app, event| {
+            let id = event.id().as_ref();
+            if !id.starts_with("popup_") {
+                handle_menu_event(app, id);
+            }
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                let app = tray.app_handle();
+                let hidden = app
+                    .get_webview_window("main")
+                    .and_then(|w| w.is_visible().ok())
+                    .map(|v| !v)
+                    .unwrap_or(false);
+                if hidden {
+                    if let Err(e) = apply_widget_visibility(app, true) {
+                        eprintln!("show widget failed: {e}");
+                    }
+                }
+            }
+        })
+        .build(app)?;
+    Ok(visibility)
+}
+
+/// 显示/隐藏鲸鱼小窗（隐藏时只在托盘保留图标），并把开关写进配置、同步菜单文字。
+fn apply_widget_visibility(app: &tauri::AppHandle, visible: bool) -> tauri::Result<()> {
+    let Some(win) = app.get_webview_window("main") else {
+        return Ok(());
+    };
+    if visible {
+        win.show()?;
+    } else {
+        win.hide()?;
+    }
+    {
+        let st = app.state::<AppState>();
+        let _g = st.cfg.lock().unwrap_or_else(|e| e.into_inner());
+        config::write_hide_widget(&st.dir, !visible);
+    }
+    if let Some(items) = app.try_state::<VisibilityMenuItems>() {
+        let label = visibility_label(!visible);
+        let _ = items.tray.set_text(label);
+        let _ = items.popup.set_text(label);
+    }
+    Ok(())
 }
 
 /// 打开设置窗口。`check_update=true`（托盘「检查更新」）时置 AppState 挂起标志并广播事件：
@@ -1089,6 +1191,12 @@ fn move_window(app: tauri::AppHandle, x: f64, y: f64) -> Result<(), String> {
     };
     win.set_position(tauri::LogicalPosition::new(x, y))
         .map_err(|e| e.to_string())
+}
+
+/// 显示/隐藏鲸鱼小窗（挂件菜单「隐藏到托盘」；托盘菜单也能切回来）。
+#[tauri::command]
+fn set_widget_visible(app: tauri::AppHandle, visible: bool) -> Result<(), String> {
+    apply_widget_visibility(&app, visible).map_err(|e| e.to_string())
 }
 
 /// 鲸鱼窗口点击穿透：true 时整窗忽略鼠标，点击直达桌面。

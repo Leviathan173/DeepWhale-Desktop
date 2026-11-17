@@ -88,6 +88,9 @@ pub struct AppConfig {
     /// 勿扰模式：大肥鱼常睡，不跑自动作息（只影响挂件动画，不影响余额刷新）。
     #[serde(default)]
     pub dnd: bool,
+    /// 隐藏鲸鱼小窗，只在任务栏托盘保留图标（托盘菜单/左键点击托盘图标可重新显示）。
+    #[serde(default)]
+    pub hide_widget: bool,
     pub scale: f64,
     pub sound: bool,
     pub vol: f64,
@@ -221,6 +224,7 @@ impl Default for AppConfig {
         Self {
             appearance: default_appearance(),
             dnd: false,
+            hide_widget: false,
             scale: 1.5,
             sound: true,
             vol: 0.9,
@@ -323,6 +327,13 @@ pub fn write_appearance(dir: &Path, appearance: &str) {
 pub fn write_dnd(dir: &Path, on: bool) {
     let mut cfg = read(dir);
     cfg.dnd = on;
+    write_file(dir, &cfg.normalized());
+}
+
+/// 只改「隐藏鲸鱼小窗」开关（不碰其它挂件偏好）。
+pub fn write_hide_widget(dir: &Path, hidden: bool) {
+    let mut cfg = read(dir);
+    cfg.hide_widget = hidden;
     write_file(dir, &cfg.normalized());
 }
 
@@ -599,6 +610,24 @@ mod tests {
         assert_eq!(c.appearance, "dsh");
         write_dnd(&dir, false);
         assert!(!read(&dir).dnd);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn hide_widget_toggle_preserves_other_fields() {
+        let dir = tmp_dir("dshw-config-hide-test");
+        assert!(!read(&dir).hide_widget, "缺省不隐藏");
+        write_prefs(&dir, 1.4, true, 0.7, "duck", "token", "");
+        write_dnd(&dir, true);
+        write_hide_widget(&dir, true);
+        let c = read(&dir);
+        assert!(c.hide_widget);
+        assert!(c.dnd, "不应清掉勿扰");
+        assert_eq!(c.scale, 1.4);
+        write_hide_widget(&dir, false);
+        assert!(!read(&dir).hide_widget);
+        assert_eq!(read(&dir).scale, 1.4);
 
         let _ = fs::remove_dir_all(&dir);
     }
